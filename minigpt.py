@@ -1016,7 +1016,7 @@ if __name__ == "__main__":
         gc.collect()  # lepaskan graph epoch sebelumnya secara eksplisit
 
     print("\n=== Menyimpan Checkpoint ===")
-    ckpt_path = "checkpoint_minigpt.json"
+    ckpt_path = "hasil.json"
     model_config = {
         'vocab_size': len(tokenizer.vocab), 'd_model': model.d_model,
         'n_heads': 2, 'n_layers': len(model.blocks), 'd_ff': 24,
