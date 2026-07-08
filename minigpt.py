@@ -5,45 +5,13 @@ Tidak menggunakan numpy, pytorch, tensorflow, transformers, atau library
 eksternal apapun. Hanya modul bawaan Python: math, random, re, json,
 collections, gc.
 
---- Perbaikan v2 (review putaran pertama) ---
- 1. LayerNorm memakai Value.sqrt() khusus, bukan **0.5.
- 2. Embedding & positional embedding mengembalikan node baru (identity op)
-    tiap dipanggil, bukan objek Value yang sama dipakai berulang.
- 3. Dropout ditambahkan pada embedding, attention, dan feedforward.
- 4. <bos>/<eos> dipakai secara eksplisit saat menyiapkan data training.
- 5. Loss memakai pasangan input_ids/target_ids yang eksplisit (dipisah lewat
-    build_dataset), bukan indexing target[i+1] di tempat.
- 6. Ada batching sungguhan (gradient accumulation antar contoh dalam batch).
- 7. Optimizer AdamW ditambahkan (selain SGD).
- 8. Padding mask ditambahkan di attention & loss (selain causal mask).
- 9. Weight tying: embedding.weight == lm_head.weight.
-10. Tokenizer diganti jadi byte-level BPE (seperti GPT-2): tidak pernah
-    <unk>, decode merekonstruksi bytes UTF-8 asli sehingga spasi antar kata
-    tidak pernah rusak. Positional encoding jadi learned embedding.
+--- Library definisi ---
+Semua kelas dan fungsi didefinisikan di sini. Untuk training dan demo,
+gunakan script terpisah (train.py / demo.py) yang mengimpor modul ini.
 
---- Perbaikan v3 (review putaran kedua, permintaan saat ini) ---
-11. KV CACHE saat inference: MultiHeadSelfAttention.forward_incremental(),
-    TransformerBlock.forward_incremental(), dan MiniGPT.forward_incremental()
-    + init_cache() memproses HANYA satu token baru per langkah generate,
-    bukan mengulang forward dari posisi 0 setiap kali (lihat kelas KVCache
-    dan fungsi generate()).
-12. Algoritma BYTE-LEVEL BPE ENCODE kini benar-benar mengikuti ranking merge
-    GPT-2: ByteLevelBPETokenizer._apply_bpe() mencari pasangan dengan RANK
-    TERENDAH yang ada di kata pada SETIAP langkah (bukan satu kali jalan
-    berurutan lewat merge_order), karena merge di satu tempat bisa
-    memunculkan pasangan baru berank lebih rendah yang harus dicoba duluan.
-13. GRADIENT CLIPPING: clip_grad_norm() membatasi norma-L2 gabungan semua
-    gradien sebelum optimizer.step(), mencegah exploding gradient.
-14. SCHEDULER warmup + cosine decay: WarmupCosineScheduler menaikkan lr
-    linear di awal lalu menurunkannya mengikuti kurva cosine.
-15. SAVE/LOAD CHECKPOINT: save_checkpoint()/load_checkpoint() menyimpan
-    bobot model, momen optimizer (Adam m/v/t), langkah scheduler, dan
-    vocab+merges tokenizer ke satu file JSON, lalu bisa dimuat ke model baru
-    dengan arsitektur yang sama persis.
-
-Catatan performa (tetap berlaku): karena autograd berbasis skalar Python
-murni, dimensi model (d_model, n_layers, seq_len) sengaja dibuat kecil agar
-demo tetap selesai dalam waktu wajar. Untuk model besar, gunakan PyTorch.
+Catatan performa: karena autograd berbasis skalar Python murni, dimensi
+model (d_model, n_layers, seq_len) sengaja dibuat kecil agar demo tetap
+selesai dalam waktu wajar. Untuk model besar, gunakan PyTorch.
 """
 
 import math
@@ -948,91 +916,3 @@ def generate(model, tokenizer, prompt, max_new_tokens=25, temperature=0.9,
 
     model.train()
     return tokenizer.decode(ids)
-
-
-# ============================================================
-# 11. DEMO
-# ============================================================
-if __name__ == "__main__":
-    random.seed(0)
-
-    kalimat = [
-        "kucing suka makan ikan.",
-        "anjing suka makan tulang.",
-        "kucing dan anjing adalah hewan peliharaan.",
-        "burung suka terbang tinggi di langit.",
-        "ikan berenang di air.",
-        "kucing suka tidur di sofa.",
-    ]
-
-    print("=== Melatih Tokenizer Byte-Level BPE ===")
-    tokenizer = ByteLevelBPETokenizer()
-    tokenizer.train(" ".join(kalimat), vocab_size=320)
-    print(f"Ukuran vocab: {len(tokenizer.vocab)}")
-
-    enc = tokenizer.encode("kucing suka makan ikan 🐟")  # sertakan emoji: uji anti-<unk>
-    print(f"Encode (dgn emoji) -> {enc}")
-    print(f"Decode kembali     -> '{tokenizer.decode(enc)}'")
-
-    print("\n=== Menyiapkan Dataset (BOS/EOS + input/target eksplisit) ===")
-    pad_id = tokenizer.vocab['<pad>']
-    token_lists = [tokenizer.encode(k, add_bos=True, add_eos=True) for k in kalimat]
-    seq_len = 10
-    dataset = build_dataset(token_lists, seq_len=seq_len, pad_id=pad_id)
-    print(f"Jumlah contoh training: {len(dataset)}")
-
-    print("\n=== Membangun Mini-GPT (dengan dropout, weight tying, AdamW) ===")
-    # Catatan performa: autograd berbasis skalar Python murni (bukan numpy),
-    # jadi dimensi sengaja dibuat kecil (d_model, d_ff, n_layers, seq_len)
-    # agar demo tetap selesai dalam waktu wajar untuk belajar konsepnya.
-    model = MiniGPT(vocab_size=len(tokenizer.vocab), d_model=12, n_heads=2,
-                     n_layers=1, d_ff=24, max_len=32, dropout=0.1)
-    model.train()
-    params = model.parameters()
-    print(f"Jumlah parameter (Value): {len(params)}")
-
-    optimizer = AdamW(params, lr=0.03, weight_decay=0.01)
-
-    epochs = 6
-    batch_size = 2
-    n_batches_per_epoch = math.ceil(len(dataset) / batch_size)
-    total_steps = epochs * n_batches_per_epoch
-    scheduler = WarmupCosineScheduler(
-        optimizer, warmup_steps=max(2, total_steps // 5),
-        total_steps=total_steps, base_lr=0.03, min_lr=0.002,
-    )
-
-    print("\n=== Training (batch + AdamW + gradient clipping + scheduler) ===")
-    for epoch in range(1, epochs + 1):
-        epoch_loss, n_batch = 0.0, 0
-        for batch in iter_batches(dataset, batch_size=batch_size, shuffle=True):
-            loss_val, grad_norm = train_batch(model, optimizer, batch,
-                                               scheduler=scheduler, max_grad_norm=1.0)
-            epoch_loss += loss_val
-            n_batch += 1
-        if epoch == 1 or epoch % 3 == 0:
-            print(f"Epoch {epoch:2d}/{epochs} - Loss: {epoch_loss / n_batch:.4f} "
-                  f"- lr: {optimizer.lr:.5f} - grad_norm terakhir: {grad_norm:.3f}")
-        gc.collect()  # lepaskan graph epoch sebelumnya secara eksplisit
-
-    print("\n=== Menyimpan Checkpoint ===")
-    ckpt_path = "hasil.json"
-    model_config = {
-        'vocab_size': len(tokenizer.vocab), 'd_model': model.d_model,
-        'n_heads': 2, 'n_layers': len(model.blocks), 'd_ff': 24,
-        'max_len': model.max_len, 'dropout': 0.1,
-    }
-    save_checkpoint(ckpt_path, model, optimizer, scheduler, tokenizer, config=model_config)
-
-    print("\n=== Memuat Ulang Checkpoint ke Model BARU (uji save/load) ===")
-    cfg = json.load(open(ckpt_path))['config']
-    model2 = MiniGPT(vocab_size=cfg['vocab_size'], d_model=cfg['d_model'],
-                      n_heads=cfg['n_heads'], n_layers=cfg['n_layers'],
-                      d_ff=cfg['d_ff'], max_len=cfg['max_len'], dropout=cfg['dropout'])
-    tokenizer2 = ByteLevelBPETokenizer()
-    load_checkpoint(ckpt_path, model2, tokenizer=tokenizer2)
-
-    print("\n=== Generate Teks dengan Model Hasil Load (KV cache aktif) ===")
-    hasil = generate(model2, tokenizer2, "kucing suka", max_new_tokens=10,
-                      temperature=0.8, top_p=0.9)
-    print("Hasil:", hasil)
