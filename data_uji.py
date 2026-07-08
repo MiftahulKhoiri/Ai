@@ -31,7 +31,7 @@ while True:
     # Hasilkan teks dengan sampling (pakai KV cache otomatis)
     hasil = generate(
         model, tokenizer, prompt,
-        max_new_tokens=25,   # bisa disesuaikan
+        max_new_tokens=50,   # bisa disesuaikan
         temperature=0.9,
         top_p=0.9
     )
