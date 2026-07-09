@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual Environment
+ven/
+env/
+.env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# Spyder
+.spyproject/
+
+# Rope project
+.ropeproject/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Compiled C++ object files
+*.o
+*.obj
+*.out
+
+# Model checkpoints and data
+*.pt
+*.pth
+*.bin
+*.ckpt
+checkpoints/
+models/
+
+# Training data
+data/
+dataset/
+*.txt
+!requirements.txt
+!README.md
+
+# Tokenizer saved files
+*.json
+!package.json
+!tsconfig.json
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Specific to this project
+minigpt.cpython-*.so
+minigpt.*.so
