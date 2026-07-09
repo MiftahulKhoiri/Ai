@@ -2,6 +2,7 @@ import json
 import os
 import glob
 import time
+from memory_monitor import monitor_memory
 from minigpt import MiniGPT, ByteLevelBPETokenizer, AdamW, WarmupCosineScheduler, generate
 from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpoint, load_checkpoint
 
@@ -52,6 +53,7 @@ def test_generate(model, tokenizer):
         print(f"Prompt: {p!r} -> {result}")
 
 def main():
+    monitor_memory()
     print("Memuat data...")
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         sentences = json.load(f)
