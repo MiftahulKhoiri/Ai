@@ -1,2 +1,4 @@
-# Ai
-Belajar membuat Ai dari awal
+
+
+build modul
+python setup.py build_ext --inplace
