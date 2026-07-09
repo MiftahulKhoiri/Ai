@@ -6,26 +6,25 @@ from minigpt import (
     ByteLevelBPETokenizer, MiniGPT, AdamW, WarmupCosineScheduler,
     build_dataset, iter_batches, train_batch, save_checkpoint, generate
 )
-# from demo import test_generate  <-- HAPUS BARIS INI
 
 # ============================================================
 # KONFIGURASI TRAINING (dapat disesuaikan)
 # ============================================================
 DATA_FILE = "data.json"          # file JSON berisi list kalimat latih (string)
-SEQ_LEN = 32                      # panjang maksimal urutan token dalam satu contoh (sliding window)
-BATCH_SIZE = 16                   # jumlah contoh per batch training
-EPOCHS = 10                       # berapa kali seluruh data dilewati (epoch)
-LR = 0.01                         # learning rate awal (sebelum warmup/cosine decay)
-WARMUP_STEPS = 50                 # jumlah langkah pemanasan (linear naik dari 0 ke LR)
-TOTAL_STEPS = 500                 # total langkah training (setelah ini scheduler cosine turun ke min_lr)
-MAX_GRAD_NORM = 1.0               # batas maksimal norm gradien (gradient clipping)
-D_MODEL = 16                      # dimensi embedding dan hidden state transformer
-N_HEADS = 2                       # jumlah head dalam multi-head attention
-N_LAYERS = 2                      # jumlah layer transformer (blok)
-D_FF = 32                         # dimensi feed-forward inner layer
-MAX_LEN = 64                      # panjang maksimum posisi (max position embedding)
-DROPOUT = 0.1                     # probabilitas dropout (regularisasi)
-VOCAB_SIZE = 400                  # ukuran kosakata tokenizer BPE (termasuk special tokens)
+SEQ_LEN = 16                     # panjang maksimal urutan token (gunakan 16 untuk data pendek)
+BATCH_SIZE = 8                   # jumlah contoh per batch (kecilkan jika OOM atau lambat)
+EPOCHS = 10                      # berapa kali seluruh data dilewati (epoch)
+LR = 0.01                        # learning rate awal (sebelum warmup/cosine decay)
+WARMUP_STEPS = 30                # jumlah langkah pemanasan (linear naik dari 0 ke LR)
+TOTAL_STEPS = 200                # total langkah training (cukup untuk dataset kecil)
+MAX_GRAD_NORM = 1.0              # batas maksimal norm gradien (gradient clipping)
+D_MODEL = 8                      # dimensi embedding (kecilkan agar cepat, 8 untuk uji coba)
+N_HEADS = 2                      # jumlah head dalam multi-head attention (harus membagi d_model)
+N_LAYERS = 1                     # jumlah layer transformer (1 layer untuk data kecil)
+D_FF = 16                        # dimensi feed-forward inner layer
+MAX_LEN = 32                     # panjang maksimum posisi (sesuaikan dengan SEQ_LEN)
+DROPOUT = 0.1                    # probabilitas dropout (regularisasi)
+VOCAB_SIZE = 200                 # ukuran kosakata tokenizer BPE (kecilkan untuk mempercepat)
 
 def get_next_version():
     """Mencari versi checkpoint tertinggi lalu mengembalikan versi berikutnya."""
@@ -95,39 +94,43 @@ def main():
                                       total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
 
     print("Mulai training...")
-    total_batches = min(len(examples) // BATCH_SIZE, TOTAL_STEPS)
+    total_batches = max(1, len(examples) // BATCH_SIZE)
+    print(f"Estimasi batch per epoch: {total_batches}")
     start_time = time.time()
 
     for epoch in range(1, EPOCHS + 1):
         total_loss = 0.0
         n_batches = 0
         epoch_start = time.time()
+        print(f"\n--- Epoch {epoch}/{EPOCHS} dimulai ---")
 
         for batch in iter_batches(examples, BATCH_SIZE, shuffle=True):
+            # Cek apakah batch kosong (seharusnya tidak terjadi)
+            if len(batch) == 0:
+                continue
+
             loss, grad_norm = train_batch(model, optimizer, batch, scheduler=scheduler,
                                           max_grad_norm=MAX_GRAD_NORM)
             total_loss += loss
             n_batches += 1
 
-            if n_batches % 10 == 0 or n_batches == 1:
-                elapsed = time.time() - epoch_start
-                batches_done = n_batches
-                est_total = min(len(examples) // BATCH_SIZE, max(1, n_batches))
-                progress_pct = min(100.0, 100.0 * batches_done / est_total)
-                eta_sec = (elapsed / batches_done) * (est_total - batches_done) if batches_done else 0
-                print(f"Epoch {epoch}/{EPOCHS} | Batch {batches_done}/{est_total} ({progress_pct:.0f}%) | "
-                      f"loss={loss:.4f} | grad_norm={grad_norm:.4f} | lr={optimizer.lr:.6f} | "
-                      f"elapsed={format_time(elapsed)} | ETA={format_time(eta_sec)}")
+            # Tampilkan progress SETIAP BATCH agar terlihat pergerakan
+            elapsed = time.time() - epoch_start
+            est_remaining = max(0, total_batches - n_batches)
+            eta_sec = (elapsed / n_batches) * est_remaining if n_batches > 0 else 0
+            print(f"  Batch {n_batches}/{total_batches} | loss={loss:.4f} | grad={grad_norm:.4f} | "
+                  f"lr={optimizer.lr:.6f} | {format_time(elapsed)} < {format_time(eta_sec)}")
 
             if scheduler.step_num >= TOTAL_STEPS:
+                print("  Batas TOTAL_STEPS tercapai, menghentikan epoch lebih awal.")
                 break
 
         avg_loss = total_loss / max(1, n_batches)
         epoch_time = time.time() - epoch_start
-        print(f"Epoch {epoch}/{EPOCHS} selesai | avg loss: {avg_loss:.4f} | waktu: {format_time(epoch_time)}\n")
+        print(f"  >>> Epoch {epoch}/{EPOCHS} selesai | avg loss: {avg_loss:.4f} | waktu: {format_time(epoch_time)}")
 
     total_time = time.time() - start_time
-    print(f"Total waktu training: {format_time(total_time)}")
+    print(f"\nTotal waktu training: {format_time(total_time)}")
 
     # Simpan checkpoint
     version = get_next_version()
@@ -145,7 +148,7 @@ def main():
                     tokenizer=tokenizer, config=config)
     print(f"Training selesai, model disimpan sebagai {checkpoint_path}")
 
-    # Tes hasil training (tanpa impor dari demo)
+    # Tes hasil training
     test_generate(model, tokenizer)
 
 if __name__ == "__main__":
