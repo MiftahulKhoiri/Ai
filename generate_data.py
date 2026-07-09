@@ -30,7 +30,7 @@ def generate_synthetic_data(num_sentences):
     return sentences
 
 if __name__ == "__main__":
-    num = 10
+    num = 20
     output = "data.json"
     if len(sys.argv) >= 2:
         num = int(sys.argv[1])
