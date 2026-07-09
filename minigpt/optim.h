@@ -25,9 +25,9 @@ struct AdamW {
 };
 
 // ============================================================
-// GRADIENT CLIPPING
+// GRADIENT CLIPPING (sekarang mengembalikan double)
 // ============================================================
-void clip_grad_norm(std::vector<ValuePtr>& params, double max_norm);
+double clip_grad_norm(std::vector<ValuePtr>& params, double max_norm);
 
 // ============================================================
 // WARMUP COSINE SCHEDULER
