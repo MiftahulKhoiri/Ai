@@ -85,7 +85,7 @@ def main():
         max_len=MAX_LEN,
         dropout=DROPOUT
     )
-    model.train()
+    model.set_training(True)  # <-- PERBAIKAN: gunakan set_training(True)
 
     optimizer = AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
