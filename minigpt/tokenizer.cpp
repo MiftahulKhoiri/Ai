@@ -1,55 +1,77 @@
 #include "tokenizer.h"
 #include <regex>
-#include <set>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <cstdint>
+#include <stdexcept>
 
-namespace py = pybind11;
+// Inisialisasi static members
+bool ByteLevelBPETokenizer::byte_maps_initialized = false;
+std::unordered_map<int, std::string> ByteLevelBPETokenizer::BYTE_ENCODER;
+std::unordered_map<std::string, int> ByteLevelBPETokenizer::BYTE_DECODER;
 
-// Static byte maps
-static std::unordered_map<int, std::string> BYTE_ENCODER;
-static std::unordered_map<std::string, int> BYTE_DECODER;
-static bool byte_maps_initialized = false;
+static const std::regex PRETOKEN_PAT(
+    R"('s|'t|'re|'ve|'m|'ll|'d| ?[^\W\d_]+| ?\d+| ?[^\s\w]+|\s+(?!\S)|\s+)"
+);
+
+ByteLevelBPETokenizer::ByteLevelBPETokenizer() {
+    init_byte_maps();
+}
+
+std::string ByteLevelBPETokenizer::utf8_encode(uint32_t codepoint) {
+    std::string result;
+    if (codepoint <= 0x7F) {
+        // 1 byte (ASCII)
+        result += static_cast<char>(codepoint);
+    } else if (codepoint <= 0x7FF) {
+        // 2 bytes
+        result += static_cast<char>(0xC0 | (codepoint >> 6));
+        result += static_cast<char>(0x80 | (codepoint & 0x3F));
+    } else if (codepoint <= 0xFFFF) {
+        // 3 bytes
+        result += static_cast<char>(0xE0 | (codepoint >> 12));
+        result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+        result += static_cast<char>(0x80 | (codepoint & 0x3F));
+    } else if (codepoint <= 0x10FFFF) {
+        // 4 bytes
+        result += static_cast<char>(0xF0 | (codepoint >> 18));
+        result += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+        result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+        result += static_cast<char>(0x80 | (codepoint & 0x3F));
+    }
+    return result;
+}
 
 void ByteLevelBPETokenizer::init_byte_maps() {
     if (byte_maps_initialized) return;
     byte_maps_initialized = true;
     
-    // Karakter yang bisa dicetak langsung (valid ASCII/Unicode)
-    std::vector<int> bs;
-    for (int b = '!'; b <= '~'; ++b) bs.push_back(b);           // 33-126
-    for (int b = 0xa1; b <= 0xac; ++b) bs.push_back(b);         // 161-172
-    for (int b = 0xae; b <= 0xff; ++b) bs.push_back(b);         // 174-255
+    // Kumpulkan byte yang bisa dicetak langsung sebagai karakter ASCII/Latin-1
+    std::vector<int> printable_bytes;
+    // ASCII printable (33-126)
+    for (int b = '!'; b <= '~'; ++b) printable_bytes.push_back(b);
+    // Latin-1 Supplement printable (161-172, 174-255)
+    for (int b = 0xA1; b <= 0xAC; ++b) printable_bytes.push_back(b);
+    for (int b = 0xAE; b <= 0xFF; ++b) printable_bytes.push_back(b);
     
     int n = 0;
     for (int b = 0; b < 256; ++b) {
-        if (std::find(bs.begin(), bs.end(), b) == bs.end()) {
-            // Gunakan Unicode code point U+0100 sampai U+01FF (Latin Extended-A)
-            // Ini adalah karakter valid UTF-8 yang aman digunakan
-            int code_point = 0x0100 + n;
-            
-            // Encode code point ke UTF-8
-            std::string utf8_char;
-            if (code_point < 0x80) {
-                utf8_char += static_cast<char>(code_point);
-            } else if (code_point < 0x800) {
-                utf8_char += static_cast<char>(0xC0 | (code_point >> 6));
-                utf8_char += static_cast<char>(0x80 | (code_point & 0x3F));
-            } else if (code_point < 0x10000) {
-                utf8_char += static_cast<char>(0xE0 | (code_point >> 12));
-                utf8_char += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
-                utf8_char += static_cast<char>(0x80 | (code_point & 0x3F));
+        if (std::find(printable_bytes.begin(), printable_bytes.end(), b) != printable_bytes.end()) {
+            // Byte yang printable: gunakan langsung sebagai karakter Latin-1
+            // Encode ke UTF-8 (Latin-1 code points 0xA0-0xFF menjadi UTF-8 2-byte)
+            uint32_t codepoint;
+            if (b < 0x80) {
+                codepoint = b;  // ASCII
+            } else {
+                codepoint = b;  // Latin-1
             }
-            
-            BYTE_ENCODER[b] = utf8_char;
-            ++n;
+            BYTE_ENCODER[b] = utf8_encode(codepoint);
         } else {
-            // Karakter ASCII yang bisa langsung digunakan
-            BYTE_ENCODER[b] = std::string(1, static_cast<char>(b));
+            // Byte yang tidak printable: gunakan Private Use Area (U+E000 - U+E0FF)
+            uint32_t codepoint = 0xE000 + n;
+            BYTE_ENCODER[b] = utf8_encode(codepoint);
+            n++;
         }
     }
     
@@ -60,41 +82,49 @@ void ByteLevelBPETokenizer::init_byte_maps() {
     }
 }
 
-static const std::regex PRETOKEN_PAT(
-    R"('s|'t|'re|'ve|'m|'ll|'d| ?[^\W\d_]+| ?\d+| ?[^\s\w]+|\s+(?!\S)|\s+)"
-);
+bool ByteLevelBPETokenizer::is_special_token(const std::string& token) const {
+    return token == "<pad>" || token == "<bos>" || token == "<eos>" || token == "<unk>";
+}
 
 void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
-    init_byte_maps();
-    
-    // Tokenisasi teks menjadi simbol byte-level
+    // Tokenisasi teks menjadi urutan simbol byte
     std::vector<std::vector<std::string>> words;
     std::sregex_iterator it(corpus.begin(), corpus.end(), PRETOKEN_PAT);
     std::sregex_iterator end;
     for (; it != end; ++it) {
         std::string token = it->str();
         std::vector<std::string> syms;
-        for (unsigned char c : token)
-            syms.push_back(BYTE_ENCODER.at(c));
-        words.push_back(syms);
+        for (unsigned char c : token) {
+            auto enc_it = BYTE_ENCODER.find(c);
+            if (enc_it != BYTE_ENCODER.end()) {
+                syms.push_back(enc_it->second);
+            }
+        }
+        if (!syms.empty()) {
+            words.push_back(syms);
+        }
     }
-
-    // Hitung frekuensi setiap kata (urutan simbol)
+    
+    if (words.empty()) return;
+    
+    // Hitung frekuensi
     std::map<std::vector<std::string>, int> freq;
     for (auto& w : words) freq[w]++;
-
-    // Inisialisasi splits: setiap kata dipecah menjadi simbol-simbol
+    
+    // Inisialisasi splits
     std::map<std::vector<std::string>, std::vector<std::string>> splits;
     for (auto& p : freq) splits[p.first] = p.first;
-
-    // Base vocabulary dari 256 byte
+    
+    // Hitung base vocabulary size
     std::set<std::string> base_vocab;
     for (auto& p : BYTE_ENCODER) base_vocab.insert(p.second);
-
+    
     int num_merges = std::max(0, vocab_size - (int)base_vocab.size() - 4);  // 4 special tokens
+    merge_order.clear();
+    merge_rank.clear();
     
     for (int step = 0; step < num_merges; ++step) {
-        // Hitung frekuensi setiap pasangan
+        // Hitung frekuensi pasangan
         std::map<std::pair<std::string, std::string>, int> pair_counts;
         for (auto& wf : freq) {
             auto& syms = splits[wf.first];
@@ -109,13 +139,14 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         auto best = std::max_element(pair_counts.begin(), pair_counts.end(),
             [](auto& a, auto& b) { return a.second < b.second; });
         
-        if (best->second < 2) break;  // Berhenti jika frekuensi terlalu rendah
+        if (best->second < 2) break;
         
         std::pair<std::string, std::string> best_pair = best->first;
         std::string merged = best_pair.first + best_pair.second;
         merge_order.push_back(best_pair);
-
-        // Merge pasangan di semua kata
+        merge_rank[best_pair] = step;
+        
+        // Merge di semua kata
         for (auto& wf : freq) {
             auto& syms = splits[wf.first];
             std::vector<std::string> new_syms;
@@ -131,7 +162,7 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
             splits[wf.first] = new_syms;
         }
     }
-
+    
     // Build vocabulary
     std::vector<std::string> specials = {"<pad>", "<bos>", "<eos>", "<unk>"};
     std::vector<std::string> all_tokens = specials;
@@ -139,36 +170,28 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
     // Tambahkan base vocab
     for (auto& s : base_vocab) all_tokens.push_back(s);
     
-    // Tambahkan merged tokens
+    // Tambahkan merged tokens (unik)
+    std::set<std::string> merged_set;
     for (auto& p : merge_order) {
-        std::string merged = p.first + p.second;
-        if (std::find(all_tokens.begin(), all_tokens.end(), merged) == all_tokens.end()) {
-            all_tokens.push_back(merged);
-        }
+        merged_set.insert(p.first + p.second);
     }
+    for (auto& s : merged_set) all_tokens.push_back(s);
     
-    // Sort dan hapus duplikat (kecuali special tokens di awal)
+    // Sort dan hapus duplikat (kecuali special tokens)
     std::sort(all_tokens.begin() + 4, all_tokens.end());
     all_tokens.erase(std::unique(all_tokens.begin() + 4, all_tokens.end()), all_tokens.end());
     
-    // Buat vocabulary mapping
+    // Buat mappings
     vocab.clear();
     inv_vocab.clear();
     for (size_t i = 0; i < all_tokens.size(); ++i) {
-        vocab[all_tokens[i]] = i;
+        vocab[all_tokens[i]] = static_cast<int>(i);
         inv_vocab[i] = all_tokens[i];
-    }
-    
-    // Buat merge rank
-    merge_rank.clear();
-    for (size_t i = 0; i < merge_order.size(); ++i) {
-        merge_rank[merge_order[i]] = i;
     }
 }
 
 std::vector<std::string> ByteLevelBPETokenizer::apply_bpe(const std::vector<std::string>& symbols) {
     std::vector<std::string> word = symbols;
-    
     if (word.size() <= 1) return word;
     
     while (true) {
@@ -190,9 +213,8 @@ std::vector<std::string> ByteLevelBPETokenizer::apply_bpe(const std::vector<std:
         
         std::string merged = best_pair.first + best_pair.second;
         std::vector<std::string> new_word;
-        size_t i = 0;
         
-        while (i < word.size()) {
+        for (size_t i = 0; i < word.size(); ) {
             if (i + 1 < word.size() && word[i] == best_pair.first && word[i+1] == best_pair.second) {
                 new_word.push_back(merged);
                 i += 2;
@@ -203,7 +225,6 @@ std::vector<std::string> ByteLevelBPETokenizer::apply_bpe(const std::vector<std:
         }
         
         word = new_word;
-        
         if (word.size() == 1) break;
     }
     
@@ -225,7 +246,6 @@ std::vector<int> ByteLevelBPETokenizer::encode(const std::string& text, bool add
         std::string token = it->str();
         std::vector<std::string> syms;
         
-        // Konversi setiap byte ke representasi Unicode
         for (unsigned char c : token) {
             auto enc_it = BYTE_ENCODER.find(c);
             if (enc_it != BYTE_ENCODER.end()) {
@@ -233,15 +253,12 @@ std::vector<int> ByteLevelBPETokenizer::encode(const std::string& text, bool add
             }
         }
         
-        // Apply BPE
-        std::vector<std::string> bpe_result = apply_bpe(syms);
-        
+        auto bpe_result = apply_bpe(syms);
         for (auto& s : bpe_result) {
             auto vit = vocab.find(s);
             if (vit != vocab.end()) {
                 ids.push_back(vit->second);
             } else {
-                // Fallback ke <unk>
                 auto unk_it = vocab.find("<unk>");
                 if (unk_it != vocab.end()) {
                     ids.push_back(unk_it->second);
@@ -251,11 +268,59 @@ std::vector<int> ByteLevelBPETokenizer::encode(const std::string& text, bool add
     }
     
     if (add_eos) {
-        auto it = vocab.find("<eos>");
-        if (it != vocab.end()) ids.push_back(it->second);
+        auto eos_it = vocab.find("<eos>");
+        if (eos_it != vocab.end()) ids.push_back(eos_it->second);
     }
     
     return ids;
+}
+
+uint32_t decode_utf8_char(const std::string& str, size_t& i, int& bytes_consumed) {
+    bytes_consumed = 0;
+    if (i >= str.size()) return 0;
+    
+    unsigned char c = str[i];
+    uint32_t codepoint = 0;
+    int seq_len = 0;
+    
+    if ((c & 0x80) == 0) {
+        // 1 byte
+        codepoint = c;
+        seq_len = 1;
+    } else if ((c & 0xE0) == 0xC0) {
+        // 2 bytes
+        codepoint = c & 0x1F;
+        seq_len = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+        // 3 bytes
+        codepoint = c & 0x0F;
+        seq_len = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+        // 4 bytes
+        codepoint = c & 0x07;
+        seq_len = 4;
+    } else {
+        // Invalid UTF-8
+        bytes_consumed = 1;
+        return 0;
+    }
+    
+    // Baca continuation bytes
+    for (int j = 1; j < seq_len; j++) {
+        if (i + j >= str.size()) {
+            bytes_consumed = j;
+            return 0;
+        }
+        unsigned char cont = str[i + j];
+        if ((cont & 0xC0) != 0x80) {
+            bytes_consumed = j;
+            return 0;
+        }
+        codepoint = (codepoint << 6) | (cont & 0x3F);
+    }
+    
+    bytes_consumed = seq_len;
+    return codepoint;
 }
 
 std::string ByteLevelBPETokenizer::decode(const std::vector<int>& ids) {
@@ -266,92 +331,73 @@ std::string ByteLevelBPETokenizer::decode(const std::vector<int>& ids) {
         if (it == inv_vocab.end()) continue;
         
         std::string tok = it->second;
+        if (is_special_token(tok)) continue;
         
-        // Skip special tokens
-        if (tok == "<pad>" || tok == "<bos>" || tok == "<eos>" || tok == "<unk>")
-            continue;
-        
-        // Konversi setiap karakter Unicode kembali ke byte asli
+        // Decode setiap karakter UTF-8 di token
         for (size_t i = 0; i < tok.size(); ) {
-            unsigned char c = tok[i];
-            int code_point = 0;
-            int bytes_count = 0;
+            int bytes_consumed = 0;
+            uint32_t codepoint = decode_utf8_char(tok, i, bytes_consumed);
             
-            // Decode UTF-8 character
-            if ((c & 0x80) == 0) {
-                // Single byte (ASCII)
-                code_point = c;
-                bytes_count = 1;
-            } else if ((c & 0xE0) == 0xC0) {
-                // Two bytes
-                code_point = c & 0x1F;
-                bytes_count = 2;
-            } else if ((c & 0xF0) == 0xE0) {
-                // Three bytes
-                code_point = c & 0x0F;
-                bytes_count = 3;
-            } else if ((c & 0xF8) == 0xF0) {
-                // Four bytes
-                code_point = c & 0x07;
-                bytes_count = 4;
+            if (bytes_consumed > 0) {
+                // Cari mapping balik ke byte asli
+                if (codepoint >= 0xE000 && codepoint <= 0xE0FF) {
+                    // Private Use Area: mapping untuk non-printable bytes
+                    byte_sequence.push_back(static_cast<uint8_t>(codepoint - 0xE000));
+                } else if (codepoint < 0x80) {
+                    // ASCII
+                    byte_sequence.push_back(static_cast<uint8_t>(codepoint));
+                } else if (codepoint >= 0xA0 && codepoint <= 0xFF) {
+                    // Latin-1 Supplement
+                    byte_sequence.push_back(static_cast<uint8_t>(codepoint));
+                } else {
+                    // Fallback: gunakan byte decoder
+                    std::string char_str = tok.substr(i, bytes_consumed);
+                    auto dec_it = BYTE_DECODER.find(char_str);
+                    if (dec_it != BYTE_DECODER.end()) {
+                        byte_sequence.push_back(static_cast<uint8_t>(dec_it->second));
+                    }
+                }
+                i += bytes_consumed;
             } else {
-                // Invalid UTF-8, skip
                 i++;
-                continue;
             }
-            
-            // Extract continuation bytes
-            for (int j = 1; j < bytes_count; j++) {
-                if (i + j >= tok.size()) break;
-                code_point = (code_point << 6) | (tok[i + j] & 0x3F);
-            }
-            
-            // Kembalikan ke byte asli
-            if (code_point >= 0x0100 && code_point < 0x0200) {
-                // Karakter yang kita encode dari byte (U+0100 - U+01FF)
-                byte_sequence.push_back(static_cast<uint8_t>(code_point - 0x0100));
-            } else if (code_point < 0x80) {
-                // ASCII character langsung
-                byte_sequence.push_back(static_cast<uint8_t>(code_point));
-            } else if (code_point >= 0xA0 && code_point <= 0xFF) {
-                // Latin-1 Supplement yang valid
-                byte_sequence.push_back(static_cast<uint8_t>(code_point));
-            }
-            
-            i += bytes_count;
         }
     }
     
-    // Konversi byte sequence ke string UTF-8
     return std::string(byte_sequence.begin(), byte_sequence.end());
 }
 
 void ByteLevelBPETokenizer::save(const std::string& path) {
-    py::dict data;
-    data["vocab"] = vocab;
-    
-    std::vector<py::list> mo;
-    for (auto& p : merge_order) {
-        py::list t;
-        t.append(p.first);
-        t.append(p.second);
-        mo.push_back(t);
-    }
-    data["merge_order"] = mo;
-    
-    py::module_ json = py::module_::import("json");
-    std::string dumped = json.attr("dumps")(data).cast<std::string>();
-    
+    // Simpan sebagai JSON menggunakan Python untuk kemudahan
     std::ofstream f(path);
-    if (f.is_open()) {
-        f << dumped;
-        f.close();
+    if (!f.is_open()) {
+        throw std::runtime_error("Cannot open file for writing: " + path);
     }
+    
+    // Format JSON manual yang sederhana
+    f << "{\n";
+    f << "  \"vocab\": {\n";
+    bool first = true;
+    for (auto& p : vocab) {
+        if (!first) f << ",\n";
+        f << "    \"" << p.first << "\": " << p.second;
+        first = false;
+    }
+    f << "\n  },\n";
+    
+    f << "  \"merge_order\": [\n";
+    first = true;
+    for (auto& p : merge_order) {
+        if (!first) f << ",\n";
+        f << "    [\"" << p.first << "\", \"" << p.second << "\"]";
+        first = false;
+    }
+    f << "\n  ]\n";
+    f << "}\n";
+    f.close();
 }
 
 void ByteLevelBPETokenizer::load(const std::string& path) {
-    py::module_ json = py::module_::import("json");
-    
     std::ifstream f(path);
     if (!f.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -361,33 +407,72 @@ void ByteLevelBPETokenizer::load(const std::string& path) {
     buffer << f.rdbuf();
     f.close();
     
-    py::dict data = json.attr("loads")(buffer.str()).cast<py::dict>();
+    std::string content = buffer.str();
     
-    // Load vocab
+    // Parse JSON secara manual (sederhana)
+    // Ini hanya implementasi dasar, untuk produksi gunakan library JSON
+    
     vocab.clear();
     inv_vocab.clear();
-    
-    // Handle vocab loading dengan benar
-    py::dict vocab_dict = data["vocab"].cast<py::dict>();
-    for (auto item : vocab_dict) {
-        std::string token = item.first.cast<std::string>();
-        int id = item.second.cast<int>();
-        vocab[token] = id;
-        inv_vocab[id] = token;
-    }
-    
-    // Load merge order
     merge_order.clear();
     merge_rank.clear();
     
-    std::vector<py::list> mo = data["merge_order"].cast<std::vector<py::list>>();
-    for (auto& t : mo) {
-        std::string a = t[0].cast<std::string>();
-        std::string b = t[1].cast<std::string>();
-        merge_order.push_back({a, b});
+    // Parse vocab
+    size_t pos = content.find("\"vocab\"");
+    if (pos != std::string::npos) {
+        pos = content.find("{", pos);
+        size_t end_pos = content.find("}", pos);
+        std::string vocab_str = content.substr(pos + 1, end_pos - pos - 1);
+        
+        // Parse setiap baris "token": id
+        size_t line_start = 0;
+        while (line_start < vocab_str.length()) {
+            size_t key_start = vocab_str.find("\"", line_start);
+            if (key_start == std::string::npos) break;
+            size_t key_end = vocab_str.find("\"", key_start + 1);
+            std::string token = vocab_str.substr(key_start + 1, key_end - key_start - 1);
+            
+            size_t colon = vocab_str.find(":", key_end);
+            size_t comma = vocab_str.find(",", colon);
+            if (comma == std::string::npos) comma = vocab_str.length();
+            
+            std::string id_str = vocab_str.substr(colon + 1, comma - colon - 1);
+            // Trim whitespace
+            id_str.erase(0, id_str.find_first_not_of(" \t\n\r"));
+            id_str.erase(id_str.find_last_not_of(" \t\n\r") + 1);
+            
+            int id = std::stoi(id_str);
+            vocab[token] = id;
+            inv_vocab[id] = token;
+            
+            line_start = comma + 1;
+        }
     }
     
-    for (size_t i = 0; i < merge_order.size(); ++i) {
-        merge_rank[merge_order[i]] = i;
+    // Parse merge_order
+    pos = content.find("\"merge_order\"");
+    if (pos != std::string::npos) {
+        pos = content.find("[", pos);
+        size_t end_pos = content.find("]", pos);
+        std::string merge_str = content.substr(pos + 1, end_pos - pos - 1);
+        
+        size_t pair_start = 0;
+        while (pair_start < merge_str.length()) {
+            size_t first_start = merge_str.find("\"", pair_start);
+            if (first_start == std::string::npos) break;
+            size_t first_end = merge_str.find("\"", first_start + 1);
+            std::string first = merge_str.substr(first_start + 1, first_end - first_start - 1);
+            
+            size_t second_start = merge_str.find("\"", first_end + 1);
+            size_t second_end = merge_str.find("\"", second_start + 1);
+            std::string second = merge_str.substr(second_start + 1, second_end - second_start - 1);
+            
+            merge_order.push_back({first, second});
+            merge_rank[{first, second}] = merge_order.size() - 1;
+            
+            size_t bracket = merge_str.find("]", second_end);
+            pair_start = bracket + 2;  // Skip past "],"
+            if (pair_start >= merge_str.length()) break;
+        }
     }
 }
