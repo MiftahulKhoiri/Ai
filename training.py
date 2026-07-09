@@ -2,10 +2,8 @@ import json
 import os
 import glob
 import time
-from minigpt import (
-    ByteLevelBPETokenizer, MiniGPT, AdamW, WarmupCosineScheduler,
-    build_dataset, iter_batches, train_batch, save_checkpoint, generate
-)
+from minigpt import MiniGPT, ByteLevelBPETokenizer, AdamW, WarmupCosineScheduler, generate
+from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpoint, load_checkpoint
 
 # ============================================================
 # KONFIGURASI TRAINING (dapat disesuaikan)
