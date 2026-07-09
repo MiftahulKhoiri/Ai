@@ -1,4 +1,5 @@
 #include "optim.h"
+#include "utils.h"
 #include <cmath>
 #include <algorithm>
 
