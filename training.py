@@ -1,12 +1,12 @@
 import json
 import os
 import glob
-import time  # <-- tambahan untuk mencatat waktu
+import time
 from minigpt import (
     ByteLevelBPETokenizer, MiniGPT, AdamW, WarmupCosineScheduler,
     build_dataset, iter_batches, train_batch, save_checkpoint, generate
 )
-from demo import test_generate  # untuk tes hasil training
+# from demo import test_generate  <-- HAPUS BARIS INI
 
 # ============================================================
 # KONFIGURASI TRAINING (dapat disesuaikan)
@@ -46,10 +46,18 @@ def format_time(seconds):
     m, s = divmod(int(seconds), 60)
     return f"{m:02d}:{s:02d}"
 
+def test_generate(model, tokenizer):
+    """Tes singkat hasil generate setelah training."""
+    prompts = ["Halo", "Apa kabar", "Saya suka"]
+    print("\n--- Tes Generate ---")
+    for p in prompts:
+        result = generate(model, tokenizer, p, max_new_tokens=20)
+        print(f"Prompt: {p!r} -> {result}")
+
 def main():
     print("Memuat data...")
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        sentences = json.load(f)  # list of strings
+        sentences = json.load(f)
     print(f"Jumlah kalimat: {len(sentences)}")
 
     # Gabungkan untuk training tokenizer
@@ -87,7 +95,7 @@ def main():
                                       total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
 
     print("Mulai training...")
-    total_batches = min(len(examples) // BATCH_SIZE, TOTAL_STEPS)  # perkiraan batch per epoch
+    total_batches = min(len(examples) // BATCH_SIZE, TOTAL_STEPS)
     start_time = time.time()
 
     for epoch in range(1, EPOCHS + 1):
@@ -101,11 +109,9 @@ def main():
             total_loss += loss
             n_batches += 1
 
-            # ---------- progress per 10 batch ----------
             if n_batches % 10 == 0 or n_batches == 1:
                 elapsed = time.time() - epoch_start
                 batches_done = n_batches
-                # perkiraan total batch dalam epoch ini
                 est_total = min(len(examples) // BATCH_SIZE, max(1, n_batches))
                 progress_pct = min(100.0, 100.0 * batches_done / est_total)
                 eta_sec = (elapsed / batches_done) * (est_total - batches_done) if batches_done else 0
@@ -113,7 +119,6 @@ def main():
                       f"loss={loss:.4f} | grad_norm={grad_norm:.4f} | lr={optimizer.lr:.6f} | "
                       f"elapsed={format_time(elapsed)} | ETA={format_time(eta_sec)}")
 
-            # hentikan jika langkah scheduler sudah mencapai TOTAL_STEPS
             if scheduler.step_num >= TOTAL_STEPS:
                 break
 
@@ -140,8 +145,7 @@ def main():
                     tokenizer=tokenizer, config=config)
     print(f"Training selesai, model disimpan sebagai {checkpoint_path}")
 
-    # Tes hasil training menggunakan demo
-    print("\n--- Tes generate ---")
+    # Tes hasil training (tanpa impor dari demo)
     test_generate(model, tokenizer)
 
 if __name__ == "__main__":
