@@ -40,7 +40,7 @@ void AdamW::zero_grad() {
     for (auto& p : params) p->grad = 0.0;
 }
 
-void clip_grad_norm(std::vector<ValuePtr>& params, double max_norm) {
+double clip_grad_norm(std::vector<ValuePtr>& params, double max_norm) {
     double total_sq = 0.0;
     for (auto& p : params) total_sq += p->grad * p->grad;
     double norm = std::sqrt(total_sq);
@@ -48,6 +48,7 @@ void clip_grad_norm(std::vector<ValuePtr>& params, double max_norm) {
         double scale = max_norm / norm;
         for (auto& p : params) p->grad *= scale;
     }
+    return norm;  // Kembalikan nilai norm
 }
 
 WarmupCosineScheduler::WarmupCosineScheduler(AdamW* opt, int warmup_steps, int total_steps, double base_lr, double min_lr)
