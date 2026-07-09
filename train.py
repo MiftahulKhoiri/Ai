@@ -1,79 +1,69 @@
-"""
-Train Mini-GPT menggunakan library minigpt.py.
-Script ini melatih model dari nol, menyimpan checkpoint, lalu mencoba generate teks.
-Pastikan file minigpt.py berada di direktori yang sama.
-"""
-
-import math
-import random
 import json
-import gc
+import os
+import glob
 from minigpt import (
-    ByteLevelBPETokenizer,
-    MiniGPT,
-    AdamW,
-    WarmupCosineScheduler,
-    build_dataset,
-    iter_batches,
-    train_batch,
-    save_checkpoint,
-    load_checkpoint,
-    generate,
+    ByteLevelBPETokenizer, MiniGPT, AdamW, WarmupCosineScheduler,
+    build_dataset, iter_batches, train_batch, save_checkpoint, generate
 )
+from demo import test_generate  # untuk tes hasil training
 
 # ============================================================
-# KONFIGURASI
+# KONFIGURASI TRAINING (dapat disesuaikan)
 # ============================================================
-SEED = 0
-EPOCHS = 6
-BATCH_SIZE = 2
-SEQ_LEN = 10
-VOCAB_SIZE = 320
-D_MODEL = 12
-N_HEADS = 2
-N_LAYERS = 1
-D_FF = 24
-MAX_LEN = 32
-DROPOUT = 0.1
-LR = 0.03
-WEIGHT_DECAY = 0.01
-MAX_GRAD_NORM = 1.0
-CHECKPOINT_PATH = "checkpoint_minigpt.json"
+DATA_FILE = "data.json"          # file JSON berisi list kalimat latih (string)
+SEQ_LEN = 32                      # panjang maksimal urutan token dalam satu contoh (sliding window)
+BATCH_SIZE = 16                   # jumlah contoh per batch training
+EPOCHS = 10                       # berapa kali seluruh data dilewati (epoch)
+LR = 0.01                         # learning rate awal (sebelum warmup/cosine decay)
+WARMUP_STEPS = 50                 # jumlah langkah pemanasan (linear naik dari 0 ke LR)
+TOTAL_STEPS = 500                 # total langkah training (setelah ini scheduler cosine turun ke min_lr)
+MAX_GRAD_NORM = 1.0               # batas maksimal norm gradien (gradient clipping)
+D_MODEL = 16                      # dimensi embedding dan hidden state transformer
+N_HEADS = 2                       # jumlah head dalam multi-head attention
+N_LAYERS = 2                      # jumlah layer transformer (blok)
+D_FF = 32                         # dimensi feed-forward inner layer
+MAX_LEN = 64                      # panjang maksimum posisi (max position embedding)
+DROPOUT = 0.1                     # probabilitas dropout (regularisasi)
+VOCAB_SIZE = 400                  # ukuran kosakata tokenizer BPE (termasuk special tokens)
 
-# Data contoh (bisa diganti dengan file teks sendiri)
-KALIMAT = [
-    "kucing suka makan ikan.",
-    "anjing suka makan tulang.",
-    "kucing dan anjing adalah hewan peliharaan.",
-    "burung suka terbang tinggi di langit.",
-    "ikan berenang di air.",
-    "kucing suka tidur di sofa.",
-]
-
+def get_next_version():
+    files = glob.glob("Ai_*.json")
+    max_ver = 0
+    for f in files:
+        try:
+            ver_str = f.split("Ai_")[1].split(".json")[0]
+            ver = int(ver_str)
+            if ver > max_ver:
+                max_ver = ver
+        except:
+            pass
+    return max_ver + 1
 
 def main():
-    random.seed(SEED)
+    print("Memuat data...")
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        sentences = json.load(f)  # list of strings
+    print(f"Jumlah kalimat: {len(sentences)}")
 
-    # 1. Tokenizer
-    print("=== Melatih Tokenizer Byte-Level BPE ===")
+    # Gabungkan untuk training tokenizer
+    corpus = "\n".join(sentences)
+    print("Melatih tokenizer BPE...")
     tokenizer = ByteLevelBPETokenizer()
-    tokenizer.train(" ".join(KALIMAT), vocab_size=VOCAB_SIZE)
-    print(f"Ukuran vocab: {len(tokenizer.vocab)}")
+    tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
+    print(f"Vocab size: {len(tokenizer.vocab)}")
 
-    # Uji tokenizer
-    enc = tokenizer.encode("kucing suka makan ikan 🐟")
-    print(f"Encode (dgn emoji) -> {enc}")
-    print(f"Decode kembali     -> '{tokenizer.decode(enc)}'")
+    # Encode semua kalimat menjadi token ids dengan BOS/EOS
+    tokenized = []
+    for sent in sentences:
+        ids = tokenizer.encode(sent, add_bos=True, add_eos=True)
+        tokenized.append(ids)
 
-    # 2. Dataset
-    print("\n=== Menyiapkan Dataset (BOS/EOS + input/target eksplisit) ===")
+    # Build dataset
     pad_id = tokenizer.vocab['<pad>']
-    token_lists = [tokenizer.encode(k, add_bos=True, add_eos=True) for k in KALIMAT]
-    dataset = build_dataset(token_lists, seq_len=SEQ_LEN, pad_id=pad_id)
-    print(f"Jumlah contoh training: {len(dataset)}")
+    examples = build_dataset(tokenized, SEQ_LEN, pad_id)
+    print(f"Jumlah contoh training: {len(examples)}")
 
-    # 3. Model
-    print("\n=== Membangun Mini-GPT ===")
+    # Inisialisasi model
     model = MiniGPT(
         vocab_size=len(tokenizer.vocab),
         d_model=D_MODEL,
@@ -81,97 +71,49 @@ def main():
         n_layers=N_LAYERS,
         d_ff=D_FF,
         max_len=MAX_LEN,
-        dropout=DROPOUT,
+        dropout=DROPOUT
     )
     model.train()
-    params = model.parameters()
-    print(f"Jumlah parameter (Value): {len(params)}")
 
-    # 4. Optimizer & Scheduler
-    optimizer = AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY)
+    optimizer = AdamW(model.parameters(), lr=LR, weight_decay=0.01)
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
+                                      total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
 
-    n_batches_per_epoch = math.ceil(len(dataset) / BATCH_SIZE)
-    total_steps = EPOCHS * n_batches_per_epoch
-    scheduler = WarmupCosineScheduler(
-        optimizer,
-        warmup_steps=max(2, total_steps // 5),
-        total_steps=total_steps,
-        base_lr=LR,
-        min_lr=0.002,
-    )
+    print("Mulai training...")
+    for epoch in range(EPOCHS):
+        total_loss = 0.0
+        n_batches = 0
+        for batch in iter_batches(examples, BATCH_SIZE, shuffle=True):
+            loss, grad_norm = train_batch(model, optimizer, batch, scheduler=scheduler,
+                                          max_grad_norm=MAX_GRAD_NORM)
+            total_loss += loss
+            n_batches += 1
+            if n_batches % 10 == 0:
+                print(f"Epoch {epoch+1}, batch {n_batches}: loss={loss:.4f}, grad_norm={grad_norm:.4f}, lr={optimizer.lr:.6f}")
+            if scheduler.step_num >= TOTAL_STEPS:
+                break
+        avg_loss = total_loss / max(1, n_batches)
+        print(f"Epoch {epoch+1} selesai, avg loss: {avg_loss:.4f}")
 
-    # 5. Training Loop
-    print("\n=== Training (batch + AdamW + gradient clipping + scheduler) ===")
-    for epoch in range(1, EPOCHS + 1):
-        epoch_loss = 0.0
-        n_batch = 0
-        for batch in iter_batches(dataset, batch_size=BATCH_SIZE, shuffle=True):
-            loss_val, grad_norm = train_batch(
-                model, optimizer, batch,
-                scheduler=scheduler,
-                max_grad_norm=MAX_GRAD_NORM,
-            )
-            epoch_loss += loss_val
-            n_batch += 1
-
-        # Logging setiap beberapa epoch
-        if epoch == 1 or epoch % 3 == 0 or epoch == EPOCHS:
-            print(
-                f"Epoch {epoch:2d}/{EPOCHS} - "
-                f"Loss: {epoch_loss / n_batch:.4f} - "
-                f"lr: {optimizer.lr:.5f} - "
-                f"grad_norm terakhir: {grad_norm:.3f}"
-            )
-        gc.collect()  # lepaskan graph epoch sebelumnya
-
-    # 6. Simpan Checkpoint
-    print("\n=== Menyimpan Checkpoint ===")
-    model_config = {
-        'vocab_size': len(tokenizer.vocab),
-        'd_model': D_MODEL,
-        'n_heads': N_HEADS,
-        'n_layers': N_LAYERS,
-        'd_ff': D_FF,
-        'max_len': MAX_LEN,
-        'dropout': DROPOUT,
+    # Simpan checkpoint
+    version = get_next_version()
+    checkpoint_path = f"Ai_{version}.json"
+    config = {
+        "vocab_size": len(tokenizer.vocab),
+        "d_model": D_MODEL,
+        "n_heads": N_HEADS,
+        "n_layers": N_LAYERS,
+        "d_ff": D_FF,
+        "max_len": MAX_LEN,
+        "dropout": DROPOUT
     }
-    save_checkpoint(
-        CHECKPOINT_PATH,
-        model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        tokenizer=tokenizer,
-        config=model_config,
-    )
+    save_checkpoint(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler,
+                    tokenizer=tokenizer, config=config)
+    print(f"Training selesai, model disimpan sebagai {checkpoint_path}")
 
-    # 7. Muat Kembali & Verifikasi
-    print("\n=== Memuat Ulang Checkpoint ke Model BARU (uji save/load) ===")
-    with open(CHECKPOINT_PATH, 'r') as f:
-        cfg = json.load(f)['config']
-    model2 = MiniGPT(
-        vocab_size=cfg['vocab_size'],
-        d_model=cfg['d_model'],
-        n_heads=cfg['n_heads'],
-        n_layers=cfg['n_layers'],
-        d_ff=cfg['d_ff'],
-        max_len=cfg['max_len'],
-        dropout=cfg['dropout'],
-    )
-    tokenizer2 = ByteLevelBPETokenizer()
-    load_checkpoint(CHECKPOINT_PATH, model2, tokenizer=tokenizer2)
-
-    # 8. Generate Demo
-    print("\n=== Generate Teks dengan Model Hasil Load (KV cache aktif) ===")
-    prompt = "kucing suka"
-    hasil = generate(
-        model2, tokenizer2, prompt,
-        max_new_tokens=10,
-        temperature=0.8,
-        top_p=0.9,
-    )
-    print(f"Prompt : {prompt}")
-    print(f"Output : {hasil}")
-
+    # Tes hasil training menggunakan demo
+    print("\n--- Tes generate ---")
+    test_generate(model, tokenizer)
 
 if __name__ == "__main__":
     main()
