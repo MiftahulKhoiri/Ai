@@ -3,8 +3,17 @@ import pybind11
 
 ext = Extension(
     'minigpt',
-    ['minigpt.cpp'],
-    include_dirs=[pybind11.get_include()],
+    sources=[
+        'minigpt/value.cpp',
+        'minigpt/utils.cpp',
+        'minigpt/tokenizer.cpp',
+        'minigpt/layers.cpp',
+        'minigpt/model.cpp',
+        'minigpt/optim.cpp',
+        'minigpt/generation.cpp',
+        'minigpt/bindings.cpp'
+    ],
+    include_dirs=[pybind11.get_include(), 'minigpt'],
     language='c++',
     extra_compile_args=['-std=c++17', '-O3']
 )
