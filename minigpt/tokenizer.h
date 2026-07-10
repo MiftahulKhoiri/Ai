@@ -1,12 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <map>
 #include <string>
-#include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <map>
 #include <utility>
-#include <cstdint>
+#include <vector>
 
 class ByteLevelBPETokenizer {
 public:
@@ -21,7 +22,7 @@ public:
     std::map<std::pair<std::string, std::string>, int> merge_rank;
 
     // Training
-    void train(const std::string& corpus, int vocab_size = 400);
+    void train(const std::string& corpus, std::size_t vocab_size = 400);
 
     // Encode / Decode
     std::vector<int> encode(
@@ -30,13 +31,13 @@ public:
         bool add_eos = false
     );
 
-    std::string decode(const std::vector<int>& ids);
+    std::string decode(const std::vector<int>& ids) const;
 
     // Save / Load
-    void save(const std::string& path);
+    void save(const std::string& path) const;
     void load(const std::string& path);
 
-    inline size_t vocab_size() const {
+    [[nodiscard]] inline std::size_t vocab_size() const noexcept {
         return vocab.size();
     }
 
