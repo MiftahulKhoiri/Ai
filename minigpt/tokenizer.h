@@ -18,32 +18,44 @@ struct vector_hash {
 class ByteLevelBPETokenizer {
 public:
     ByteLevelBPETokenizer();
-    
+
     void train(const std::string& corpus, int vocab_size);
     std::vector<int> encode(const std::string& text, bool add_bos = false, bool add_eos = false);
     std::string decode(const std::vector<int>& ids);
-    
+
     bool save(const std::string& path) const;
     bool load(const std::string& path);
+
+    // ===== TAMBAHKAN GETTER DAN SETTER DI SINI =====
+    // Getter (akses baca)
+    const std::unordered_map<std::string, int>& get_vocab() const { return vocab; }
+    const std::unordered_map<int, std::string>& get_inv_vocab() const { return inv_vocab; }
+    const std::vector<std::pair<std::string, std::string>>& get_merge_order() const { return merge_order; }
     
+    // Setter (akses tulis, diperlukan untuk deserialisasi dari Python)
+    void set_vocab(const std::unordered_map<std::string, int>& v) { vocab = v; }
+    void set_inv_vocab(const std::unordered_map<int, std::string>& v) { inv_vocab = v; }
+    void set_merge_order(const std::vector<std::pair<std::string, std::string>>& m) { merge_order = m; }
+    // ===== AKHIR TAMBAHAN =====
+
 private:
     static bool byte_maps_initialized;
     static std::array<std::string, 256> BYTE_ENCODER;
     static std::unordered_map<std::string, int> BYTE_DECODER;
-    
+
     std::unordered_map<std::string, int> vocab;
     std::unordered_map<int, std::string> inv_vocab;
-    
+
     std::vector<std::pair<std::string, std::string>> merge_order;
     std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> merge_rank;
-    
+
     static void init_byte_maps();
     static std::string utf8_encode(uint32_t codepoint) noexcept;
-    
+
     bool is_special_token(const std::string& token) const noexcept;
     std::string escape_json(const std::string& str) const;
     std::vector<std::string> apply_bpe(const std::vector<std::string>& symbols);
-    
+
     // Constants
     static constexpr const char* PAD_TOKEN = "<pad>";
     static constexpr const char* BOS_TOKEN = "<bos>";
