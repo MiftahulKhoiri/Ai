@@ -3,20 +3,23 @@ from minigpt import MiniGPT, ByteLevelBPETokenizer, generate
 from minigpt_utils import load_checkpoint
 
 # ============================================================
-# KONFIGURASI CHATBOT (disesuaikan agar lebih aman)
+# KONFIGURASI (stabil untuk model yang sudah konvergen)
 # ============================================================
 MAX_CONTEXT_TURNS = 5
-MAX_NEW_TOKENS = 30          # lebih pendek untuk mengurangi error
-TEMPERATURE = 0.3            # lebih rendah => lebih deterministik
-TOP_P = 0.8                  # nucleus sampling
-TOP_K = 40                   # batasi token teratas
+MAX_NEW_TOKENS = 50
+TEMPERATURE = 0.2          # tetap kecil untuk menghindari byte liar
+TOP_P = 0.9
+TOP_K = 20                 # batasi pilihan token
 SHOW_REASONING = True
 
+def sanitize_text(text):
+    """Ganti semua karakter yang tidak dapat di-decode dengan '�'."""
+    return text.encode('utf-8', errors='replace').decode('utf-8')
+
 def safe_generate(model, tokenizer, prompt, retries=2):
-    """Generate dengan fallback ke greedy jika terjadi error decoding."""
+    """Generate dengan fallback ke greedy jika error."""
     for attempt in range(retries + 1):
         try:
-            # Pada percobaan terakhir, pakai temperature=0 (greedy)
             temp = 0.0 if attempt == retries else TEMPERATURE
             response = generate(
                 model,
@@ -24,24 +27,21 @@ def safe_generate(model, tokenizer, prompt, retries=2):
                 prompt,
                 max_new_tokens=MAX_NEW_TOKENS,
                 temperature=temp,
-                top_k=TOP_K,
-                top_p=TOP_P if temp > 0 else 1.0  # top_p tidak dipakai saat greedy
+                top_k=TOP_K if temp > 0 else 0,
+                top_p=TOP_P if temp > 0 else 1.0
             )
-            # Jika berhasil, langsung kembalikan
+            # Pastikan response adalah string yang valid
+            sanitize_text(response)  # cek apakah bisa di-encode
             return response
         except UnicodeDecodeError:
             if attempt == retries:
-                # Gagal total, lempar kembali
                 raise
-            # Kalau masih ada percobaan, lanjutkan dengan parameter lebih konservatif
             continue
-    # Seharusnya tidak sampai sini
     return ""
 
 def chat(model, tokenizer):
-    print("\n=== MiniGPT Chatbot (Reasoning Mode) ===")
+    print("\n=== MiniGPT Chatbot (Mode Stabil) ===")
     print("Ketik 'exit' atau 'keluar' untuk berhenti.\n")
-
     history = []
 
     while True:
@@ -55,7 +55,6 @@ def chat(model, tokenizer):
             print("Sampai jumpa!")
             break
 
-        # Bangun prompt
         prompt_parts = []
         start_idx = max(0, len(history) - MAX_CONTEXT_TURNS * 2)
         for msg in history[start_idx:]:
@@ -63,11 +62,10 @@ def chat(model, tokenizer):
         prompt_parts.append(f"Pengguna: {user_input}\nAI:")
         prompt = "\n".join(prompt_parts)
 
-        # Generate dengan penanganan error
         try:
             response = safe_generate(model, tokenizer, prompt)
         except UnicodeDecodeError:
-            print("AI: Maaf, saya tidak dapat memproses permintaan ini. Coba lagi dengan pertanyaan lain.\n")
+            print("AI: Maaf, saya tidak dapat memproses permintaan ini. Coba lagi.\n")
             continue
 
         # Bersihkan respons
@@ -79,7 +77,7 @@ def chat(model, tokenizer):
         if "Pengguna:" in response:
             response = response.split("Pengguna:")[0].strip()
 
-        # Tampilkan sesuai mode
+        # Tampilkan dengan sanitasi
         if not SHOW_REASONING and "Jawaban:" in response:
             final = response.split("Jawaban:")[-1].strip()
             for end_char in [".", "\n"]:
@@ -89,9 +87,9 @@ def chat(model, tokenizer):
         else:
             display = response
 
+        display = sanitize_text(display)  # <-- jaminan aman
         print(f"AI: {display}\n")
 
-        # Simpan history
         history.append(f"Pengguna: {user_input}")
         history.append(f"AI: {response}")
 
@@ -101,10 +99,7 @@ def main():
         return
 
     checkpoint_path = sys.argv[1]
-
-    # Muat checkpoint (6 nilai)
     model, _, _, tokenizer, config, _ = load_checkpoint(checkpoint_path)
-
     print(f"Model {checkpoint_path} dimuat. Vocab size: {len(tokenizer.vocab)}")
     chat(model, tokenizer)
 
