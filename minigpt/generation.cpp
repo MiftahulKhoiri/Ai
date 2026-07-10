@@ -64,7 +64,8 @@ std::string generate(MiniGPT& model, ByteLevelBPETokenizer& tok, const std::stri
     model.set_training(false);
     model.init_cache();
     auto ids = tok.encode(prompt, true, false);
-    int eos_id = tok.vocab["<eos>"];
+    // ===== PERUBAHAN: tok.vocab → tok.get_vocab() =====
+    int eos_id = tok.get_vocab().at("<eos>");
 
     std::vector<ValuePtr> logits;
     for (size_t pos = 0; pos < ids.size(); ++pos)
