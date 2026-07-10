@@ -11,8 +11,8 @@ from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpo
 # ============================================================
 DATA_FILE = "data.json"          # file JSON berisi list kalimat latih (string)
 SEQ_LEN = 16                     # panjang maksimal urutan token (gunakan 16 untuk data pendek)
-BATCH_SIZE = 2                   # jumlah contoh per batch (kecilkan jika OOM atau lambat)
-EPOCHS = 5                      # berapa kali seluruh data dilewati (epoch)
+BATCH_SIZE = 8                   # jumlah contoh per batch (kecilkan jika OOM atau lambat)
+EPOCHS = 2                      # berapa kali seluruh data dilewati (epoch)
 LR = 0.01                        # learning rate awal (sebelum warmup/cosine decay)
 WARMUP_STEPS = 30                # jumlah langkah pemanasan (linear naik dari 0 ke LR)
 TOTAL_STEPS = 200                # total langkah training (cukup untuk dataset kecil)
