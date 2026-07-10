@@ -45,6 +45,9 @@ private:
     AdamW* opt;
     int warmup, total, step_num;
     double base_lr, min_lr;
+    
+    // Konstanta untuk perhitungan cosine
+    static constexpr double PI = 3.14159265358979323846;
 };
 
 #endif // OPTIM_H
