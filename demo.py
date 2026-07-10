@@ -1,5 +1,6 @@
 import sys
-from minigpt import MiniGPT, ByteLevelBPETokenizer, load_checkpoint, generate
+from minigpt import MiniGPT, ByteLevelBPETokenizer, generate
+from minigpt_utils import load_checkpoint
 
 # ============================================================
 # KONFIGURASI CHATBOT (dapat disesuaikan)
@@ -86,9 +87,11 @@ def main():
         return
 
     checkpoint_path = sys.argv[1]
-    tokenizer = ByteLevelBPETokenizer()
-    model = MiniGPT(vocab_size=100)
-    config = load_checkpoint(checkpoint_path, model, tokenizer=tokenizer)
+
+    # Muat model, tokenizer, dll. dari checkpoint
+    # load_checkpoint mengembalikan (model, optimizer, scheduler, tokenizer, config)
+    model, _, _, tokenizer, config = load_checkpoint(checkpoint_path)
+
     print(f"Model {checkpoint_path} dimuat. Vocab size: {len(tokenizer.vocab)}")
 
     chat(model, tokenizer)
