@@ -110,7 +110,7 @@ def generate_reasoning_data(num_sentences):
     return data
 
 if __name__ == "__main__":
-    num = 20
+    num = 460
     output = "data.json"
     if len(sys.argv) >= 2:
         num = int(sys.argv[1])
