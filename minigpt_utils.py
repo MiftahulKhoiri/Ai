@@ -4,8 +4,7 @@ Digunakan bersama modul C++ minigpt.
 """
 
 import random
-import json
-from minigpt import MiniGPT, ByteLevelBPETokenizer, AdamW, WarmupCosineScheduler
+from minigpt import Value  # jika diperlukan
 
 
 def build_dataset(list_of_token_ids, seq_len, pad_id):
@@ -51,8 +50,9 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
     for inp, tgt, mask in batch:
         logits = model.forward(inp, pad_mask=mask)
         loss = cross_entropy_loss(logits, tgt, mask)
-        # loss adalah objek Value (C++), diasumsikan mendukung pembagian
-        (loss / len(batch)).backward()
+        # Karena loss adalah Value (C++), kita perlu memanggil backward
+        # dan membagi gradien secara manual untuk batch
+        (loss / len(batch)).backward()  # Ini memerlukan operator / pada Value
         total_loss += loss.data
 
     grad_norm = clip_grad_norm(optimizer.params, max_grad_norm)
@@ -65,8 +65,18 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
     return total_loss / len(batch), grad_norm
 
 
-def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None, config=None):
-    """Simpan checkpoint model."""
+def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
+                     config=None, total_steps=None):
+    """
+    Simpan checkpoint model.
+
+    total_steps: jumlah total steps yang direncanakan untuk scheduler ini.
+                 WAJIB diisi kalau ingin resume training nanti mengetahui
+                 total_steps sebelumnya (karena objek WarmupCosineScheduler
+                 dari C++ tidak menyimpan/mengekspos total_steps).
+    """
+    import json
+
     data = {
         'config': config or {},
         'model_params': [p.data for p in model.parameters()],
@@ -80,9 +90,8 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
         }
     if scheduler is not None:
         data['scheduler_step'] = scheduler.step_num
-        # Simpan juga total_steps jika ada (kita tambahkan atribut ini di training)
-        if hasattr(scheduler, 'total_steps'):
-            data['total_steps'] = scheduler.total_steps
+    if total_steps is not None:
+        data['total_steps'] = total_steps
     if tokenizer is not None:
         data['tokenizer'] = {
             'vocab': tokenizer.vocab,
@@ -93,83 +102,87 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
     print(f"[checkpoint] disimpan ke {path}")
 
 
-def load_checkpoint(path, model=None, optimizer=None, scheduler=None, tokenizer=None):
+def load_checkpoint(path, additional_steps=0, warmup_steps=0, min_lr=1e-5):
     """
-    Memuat checkpoint.
-    - Jika model=None, model akan dibuat otomatis dari config.
-    - Jika optimizer/scheduler/tokenizer=None, akan dibuat jika data tersedia.
-    Mengembalikan (model, optimizer, scheduler, tokenizer, config)
+    Muat checkpoint dan BANGUN ULANG semua object (model, optimizer, scheduler,
+    tokenizer) dari nol berdasarkan config yang tersimpan di file.
+
+    Ini beda dari versi lama yang mengharuskan model/optimizer/scheduler
+    sudah dibuat lebih dulu sebelum dipanggil. Sekarang cukup panggil dengan
+    path saja.
+
+    Parameter:
+        path            : path file checkpoint (.json)
+        additional_steps: jumlah step tambahan untuk sesi training lanjutan.
+                           Jika 0, total_steps lama (dari file) dipakai apa adanya.
+        warmup_steps    : warmup_steps baru untuk scheduler yang dibangun ulang.
+        min_lr          : min_lr baru untuk scheduler yang dibangun ulang.
+
+    Return:
+        model, optimizer, scheduler, tokenizer, config, total_steps
     """
+    import json
+    from minigpt import MiniGPT, AdamW, WarmupCosineScheduler, ByteLevelBPETokenizer
+
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    config = data.get('config', {})
+    config = data['config']
 
-    # ---- Model ----
-    if model is None:
-        # Buat model baru sesuai config
-        model = MiniGPT(
-            vocab_size=config['vocab_size'],
-            d_model=config['d_model'],
-            n_heads=config['n_heads'],
-            n_layers=config['n_layers'],
-            d_ff=config['d_ff'],
-            max_len=config['max_len'],
-            dropout=config.get('dropout', 0.0)
-        )
+    # 1. Bangun model dari config, lalu isi bobot dari checkpoint
+    model = MiniGPT(
+        vocab_size=config['vocab_size'],
+        d_model=config['d_model'],
+        n_heads=config['n_heads'],
+        n_layers=config['n_layers'],
+        d_ff=config['d_ff'],
+        max_len=config['max_len'],
+        dropout=config['dropout'],
+    )
     params = model.parameters()
-    saved_params = data['model_params']
-    if len(params) != len(saved_params):
+    saved = data['model_params']
+    if len(params) != len(saved):
         raise ValueError(
-            f"Arsitektur model tidak cocok: "
-            f"{len(params)} parameter saat ini vs {len(saved_params)} di checkpoint."
+            f"Arsitektur model tidak cocok dengan checkpoint: "
+            f"{len(params)} parameter saat ini vs {len(saved)} di file."
         )
-    for p, val in zip(params, saved_params):
+    for p, val in zip(params, saved):
         p.data = val
 
-    # ---- Optimizer ----
-    if optimizer is None and 'optimizer' in data:
-        opt_data = data['optimizer']
-        optimizer = AdamW(model.parameters(), lr=opt_data.get('lr', 0.001))
-        optimizer.m = opt_data['m']
-        optimizer.v = opt_data['v']
-        optimizer.t = opt_data['t']
-    elif optimizer is not None and 'optimizer' in data:
-        optimizer.m = data['optimizer']['m']
-        optimizer.v = data['optimizer']['v']
-        optimizer.t = data['optimizer']['t']
-        optimizer.lr = data['optimizer']['lr']
+    # 2. Bangun optimizer dan pulihkan state Adam
+    if 'optimizer' not in data:
+        raise ValueError("Checkpoint tidak memiliki state optimizer.")
+    saved_lr = data['optimizer']['lr']
+    optimizer = AdamW(params, lr=saved_lr)
+    optimizer.m = data['optimizer']['m']
+    optimizer.v = data['optimizer']['v']
+    optimizer.t = data['optimizer']['t']
 
-    # ---- Scheduler ----
-    if scheduler is None and 'scheduler_step' in data:
-        total_steps = data.get('total_steps', data['scheduler_step'] + 1)
-        scheduler = WarmupCosineScheduler(
-            optimizer,
-            warmup_steps=0,
-            total_steps=total_steps,
-            base_lr=optimizer.lr,
-            min_lr=1e-5
-        )
-        scheduler.step_num = data['scheduler_step']
-        scheduler.total_steps = total_steps
-    elif scheduler is not None and 'scheduler_step' in data:
-        scheduler.step_num = data['scheduler_step']
-        if 'total_steps' in data:
-            scheduler.total_steps = data['total_steps']
+    # 3. Bangun scheduler baru dengan total_steps yang sesuai, lalu pulihkan step_num
+    if 'scheduler_step' not in data:
+        raise ValueError("Checkpoint tidak memiliki scheduler_step.")
+    old_step_num = data['scheduler_step']
+    old_total_steps = data.get('total_steps', old_step_num)
+    total_steps = old_step_num + additional_steps if additional_steps else old_total_steps
 
-    # ---- Tokenizer ----
-    if tokenizer is None and 'tokenizer' in data:
-        tok_data = data['tokenizer']
-        tokenizer = ByteLevelBPETokenizer()
-        tokenizer.vocab = tok_data['vocab']
-        tokenizer.inv_vocab = {int(i): t for t, i in tok_data['vocab'].items()}
-        tokenizer.merge_order = tok_data['merge_order']
-        tokenizer.merge_rank = {m: i for i, m in enumerate(tokenizer.merge_order)}
-    elif tokenizer is not None and 'tokenizer' in data:
-        tokenizer.vocab = data['tokenizer']['vocab']
-        tokenizer.inv_vocab = {int(i): t for t, i in tokenizer.vocab.items()}
-        tokenizer.merge_order = data['tokenizer']['merge_order']
-        tokenizer.merge_rank = {m: i for i, m in enumerate(tokenizer.merge_order)}
+    scheduler = WarmupCosineScheduler(
+        optimizer,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
+        base_lr=saved_lr,
+        min_lr=min_lr,
+    )
+    scheduler.step_num = old_step_num
 
-    print(f"[checkpoint] dimuat dari {path}")
-    return model, optimizer, scheduler, tokenizer, config
+    # 4. Bangun tokenizer dan pulihkan vocab
+    if 'tokenizer' not in data:
+        raise ValueError("Checkpoint tidak memiliki data tokenizer.")
+    tokenizer = ByteLevelBPETokenizer()
+    tokenizer.vocab = data['tokenizer']['vocab']
+    tokenizer.inv_vocab = {int(i): t for t, i in tokenizer.vocab.items()}
+    tokenizer.merge_order = data['tokenizer']['merge_order']
+
+    print(f"[checkpoint] dimuat dari {path} "
+          f"(step terakhir={old_step_num}, total_steps baru={total_steps})")
+
+    return model, optimizer, scheduler, tokenizer, config, total_steps
