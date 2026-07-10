@@ -6,11 +6,11 @@ from minigpt_utils import load_checkpoint
 # KONFIGURASI CHATBOT (dapat disesuaikan)
 # ============================================================
 MAX_CONTEXT_TURNS = 5      # jumlah pasangan tanya-jawab sebelumnya yang dijadikan konteks
-MAX_NEW_TOKENS = 100        # maksimal token baru yang dihasilkan tiap respons
-TEMPERATURE = 0.8           # kreativitas output (makin tinggi makin acak, 0 = deterministik)
-TOP_P = 0.9                 # nucleus sampling: ambil token dengan prob kumulatif >= TOP_P
-TOP_K = None                # top-k sampling (None = matikan, misal 40 untuk mengambil 40 token teratas)
-SHOW_REASONING = True       # tampilkan seluruh langkah berpikir? False = hanya jawaban akhir
+MAX_NEW_TOKENS = 100       # maksimal token baru yang dihasilkan tiap respons
+TEMPERATURE = 0.8          # kreativitas output (makin tinggi makin acak, 0 = deterministik)
+TOP_P = 0.9                # nucleus sampling: ambil token dengan prob kumulatif >= TOP_P
+TOP_K = 0                  # top-k sampling (0 = matikan, misal 40 untuk mengambil 40 token teratas)
+SHOW_REASONING = True      # tampilkan seluruh langkah berpikir? False = hanya jawaban akhir
 
 def chat(model, tokenizer):
     """Chatbot interaktif dengan memori percakapan terbatas."""
@@ -64,9 +64,7 @@ def chat(model, tokenizer):
 
         # Opsi: hanya tampilkan jawaban akhir
         if not SHOW_REASONING and "Jawaban:" in response:
-            # Ambil teks setelah "Jawaban:" dan buang tanda baca akhir
             final = response.split("Jawaban:")[-1].strip()
-            # Hentikan pada titik atau newline
             for end_char in [".", "\n"]:
                 if end_char in final:
                     final = final.split(end_char)[0].strip()
@@ -88,12 +86,8 @@ def main():
 
     checkpoint_path = sys.argv[1]
 
-    # ============= PERBAIKAN DI SINI =============
-    # load_checkpoint sekarang mengembalikan 6 nilai:
-    # (model, optimizer, scheduler, tokenizer, config, step)
-    # Kita hanya butuh model, tokenizer, dan config; sisanya diabaikan.
+    # load_checkpoint mengembalikan 6 nilai, kita hanya butuh model, tokenizer, config
     model, _, _, tokenizer, config, _ = load_checkpoint(checkpoint_path)
-    # =============================================
 
     print(f"Model {checkpoint_path} dimuat. Vocab size: {len(tokenizer.vocab)}")
 
