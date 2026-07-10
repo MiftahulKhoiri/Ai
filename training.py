@@ -2,7 +2,6 @@ import json
 import os
 import glob
 import time
-import psutil
 from memory_monitor import monitor_memory
 from minigpt import MiniGPT, ByteLevelBPETokenizer, AdamW, WarmupCosineScheduler, generate
 from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpoint, load_checkpoint
@@ -27,29 +26,53 @@ DROPOUT = 0.1                    # probabilitas dropout (regularisasi)
 VOCAB_SIZE = 200                 # ukuran kosakata tokenizer BPE (kecilkan untuk mempercepat)
 
 # ============================================================
-# FUNGSI UTILITY
+# FUNGSI MEMORI (Tanpa psutil, untuk Termux/Android)
 # ============================================================
 
 def get_memory_info():
-    """Mengembalikan informasi penggunaan RAM saat ini."""
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    mem_mb = mem_info.rss / (1024 * 1024)  # RAM dalam MB
-    mem_percent = process.memory_percent()
-    
-    # RAM sistem
-    system_mem = psutil.virtual_memory()
-    system_total = system_mem.total / (1024 * 1024 * 1024)  # GB
-    system_used = system_mem.used / (1024 * 1024 * 1024)    # GB
-    system_percent = system_mem.percent
-    
-    return {
-        'process_mb': mem_mb,
-        'process_percent': mem_percent,
-        'system_total_gb': system_total,
-        'system_used_gb': system_used,
-        'system_percent': system_percent
+    """Membaca informasi RAM dari /proc (kompatibel dengan Android/Termux)."""
+    mem_info = {
+        'process_mb': 0.0,
+        'system_total_mb': 0.0,
+        'system_available_mb': 0.0,
+        'system_percent': 0.0
     }
+    
+    try:
+        # RAM proses (dari /proc/self/status)
+        with open('/proc/self/status', 'r') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    # VmRSS dalam kB
+                    rss_kb = int(line.split()[1])
+                    mem_info['process_mb'] = rss_kb / 1024.0
+                    break
+        
+        # RAM sistem (dari /proc/meminfo)
+        total_kb = 0
+        available_kb = 0
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    total_kb = int(line.split()[1])
+                elif line.startswith('MemAvailable:'):
+                    available_kb = int(line.split()[1])
+                elif line.startswith('MemFree:'):
+                    # Fallback jika MemAvailable tidak ada
+                    if available_kb == 0:
+                        available_kb = int(line.split()[1])
+        
+        if total_kb > 0:
+            mem_info['system_total_mb'] = total_kb / 1024.0
+            used_kb = total_kb - available_kb
+            mem_info['system_available_mb'] = available_kb / 1024.0
+            mem_info['system_percent'] = (used_kb / total_kb) * 100.0
+    
+    except Exception as e:
+        # Jika gagal membaca /proc, kembalikan nilai default
+        pass
+    
+    return mem_info
 
 def print_memory_info(label="", show_system=True):
     """Mencetak informasi penggunaan RAM."""
@@ -60,12 +83,25 @@ def print_memory_info(label="", show_system=True):
         print(f"📊 MEMORI: {label}")
         print(f"{'='*60}")
     
-    print(f"  🔹 Proses ini    : {mem['process_mb']:.1f} MB ({mem['process_percent']:.1f}% dari total RAM)")
+    if mem['process_mb'] > 0:
+        print(f"  🔹 RAM Proses     : {mem['process_mb']:.1f} MB")
+    else:
+        print(f"  🔹 RAM Proses     : tidak dapat dibaca")
     
-    if show_system:
-        print(f"  🔹 RAM Sistem    : {mem['system_used_gb']:.1f} GB / {mem['system_total_gb']:.1f} GB "
-              f"({mem['system_percent']:.1f}%)")
-        print(f"  🔹 RAM Tersisa   : {mem['system_total_gb'] - mem['system_used_gb']:.1f} GB")
+    if show_system and mem['system_total_mb'] > 0:
+        total_gb = mem['system_total_mb'] / 1024.0
+        avail_gb = mem['system_available_mb'] / 1024.0
+        used_gb = total_gb - avail_gb
+        
+        print(f"  🔹 RAM Sistem     : {used_gb:.1f} GB / {total_gb:.1f} GB ({mem['system_percent']:.1f}%)")
+        print(f"  🔹 RAM Tersedia   : {avail_gb:.1f} GB")
+    elif show_system:
+        print(f"  🔹 RAM Sistem     : tidak dapat dibaca")
+
+def get_process_memory_mb():
+    """Mengembalikan RAM proses dalam MB (untuk ditampilkan di progress)."""
+    mem = get_memory_info()
+    return mem['process_mb']
 
 def get_next_version():
     """Mencari versi checkpoint tertinggi lalu mengembalikan versi berikutnya."""
@@ -82,7 +118,7 @@ def get_next_version():
     return max_ver + 1
 
 def format_time(seconds):
-    """Mengonversi detik ke string jam:menit:detik."""
+    """Mengonversi detik ke string yang mudah dibaca."""
     if seconds < 60:
         return f"{seconds:.1f} detik"
     elif seconds < 3600:
@@ -95,16 +131,13 @@ def format_time(seconds):
 
 def estimate_model_size(vocab_size, d_model, n_layers, n_heads, d_ff, max_len):
     """Estimasi jumlah parameter model."""
-    # Embedding: vocab_size * d_model + max_len * d_model
+    # Embedding
     emb_params = vocab_size * d_model + max_len * d_model
     
-    # Per Transformer layer:
-    # - LayerNorm: 2 * d_model (weight + bias) * 2 (attention + FFN)
-    # - Multi-head attention: 4 * d_model * d_model (Q, K, V, O projections)
-    # - Feed-forward: 2 * d_model * d_ff + d_ff + d_model (W1, W2, bias)
-    attn_params = 4 * d_model * d_model
-    ffn_params = 2 * d_model * d_ff + d_ff + d_model
-    ln_params = 4 * d_model
+    # Per Transformer layer
+    attn_params = 4 * d_model * d_model      # Q, K, V, O
+    ffn_params = 2 * d_model * d_ff + d_ff + d_model  # W1, W2 + bias
+    ln_params = 4 * d_model                   # 2 LayerNorm dengan weight+bias
     per_layer = attn_params + ffn_params + ln_params
     
     # Final LayerNorm + output projection
@@ -114,7 +147,7 @@ def estimate_model_size(vocab_size, d_model, n_layers, n_heads, d_ff, max_len):
     return total
 
 # ============================================================
-# FUNGSI TEST GENERATE
+# TES GENERATE
 # ============================================================
 
 def test_generate(model, tokenizer):
@@ -124,9 +157,13 @@ def test_generate(model, tokenizer):
     print("🧪 TES GENERATE")
     print("="*60)
     for i, p in enumerate(prompts, 1):
-        result = generate(model, tokenizer, p, max_new_tokens=20)
-        print(f"  [{i}] Prompt  : {p}")
-        print(f"      Hasil   : {result}")
+        try:
+            result = generate(model, tokenizer, p, max_new_tokens=20)
+            print(f"  [{i}] Prompt  : {p}")
+            print(f"      Hasil   : {result}")
+        except Exception as e:
+            print(f"  [{i}] Prompt  : {p}")
+            print(f"      ❌ Error : {e}")
         print()
 
 # ============================================================
@@ -159,7 +196,7 @@ def main():
     print(f"  📝 Jumlah kalimat : {len(sentences)}")
     print(f"  📊 Total karakter : {total_chars}")
     print(f"  📏 Rata-rata      : {avg_chars:.1f} karakter/kalimat")
-    print_memory_info("SETELAH LOAD DATA", show_system=True)
+    print_memory_info("SETELAH LOAD DATA")
     
     # ============================================================
     # 2. TRAINING TOKENIZER
@@ -169,8 +206,8 @@ def main():
     print("="*60)
     
     corpus = "\n".join(sentences)
-    print(f"  📝 Total karakter corpus: {len(corpus)}")
-    print(f"  🎯 Target vocab size    : {VOCAB_SIZE}")
+    print(f"  📝 Total karakter corpus : {len(corpus)}")
+    print(f"  🎯 Target vocab size     : {VOCAB_SIZE}")
     
     t0 = time.time()
     tokenizer = ByteLevelBPETokenizer()
@@ -178,13 +215,13 @@ def main():
     tokenizer_time = time.time() - t0
     
     actual_vocab = len(tokenizer.vocab)
-    print(f"  ✅ Tokenizer selesai    : {format_time(tokenizer_time)}")
-    print(f"  📚 Vocab size aktual    : {actual_vocab}")
-    print(f"  🔹 Special tokens       : <pad>, <bos>, <eos>, <unk>")
+    print(f"  ✅ Tokenizer selesai     : {format_time(tokenizer_time)}")
+    print(f"  📚 Vocab size aktual     : {actual_vocab}")
+    print(f"  🔹 Special tokens        : <pad>, <bos>, <eos>, <unk>")
     
     # Tampilkan beberapa token contoh
     vocab_items = list(tokenizer.vocab.items())[:10]
-    print(f"  🔹 10 token pertama     : {[t[0] for t in vocab_items]}")
+    print(f"  🔹 10 token pertama      : {[t[0] for t in vocab_items]}")
     
     print_memory_info("SETELAH TOKENIZER")
     
@@ -195,7 +232,7 @@ def main():
     print("🔢 3. ENCODE & BUILD DATASET")
     print("="*60)
     
-    pad_id = tokenizer.get_vocab().at('<pad>')
+    pad_id = tokenizer.vocab['<pad>']
     
     tokenized = []
     total_tokens = 0
@@ -205,13 +242,13 @@ def main():
         total_tokens += len(ids)
     
     avg_tokens = total_tokens / max(1, len(sentences))
-    print(f"  🔹 Total token        : {total_tokens}")
-    print(f"  🔹 Rata-rata token    : {avg_tokens:.1f} token/kalimat")
-    print(f"  🔹 SEQ_LEN            : {SEQ_LEN}")
-    print(f"  🔹 pad_id             : {pad_id}")
+    print(f"  🔹 Total token         : {total_tokens}")
+    print(f"  🔹 Rata-rata token     : {avg_tokens:.1f} token/kalimat")
+    print(f"  🔹 SEQ_LEN             : {SEQ_LEN}")
+    print(f"  🔹 pad_id              : {pad_id}")
     
     examples = build_dataset(tokenized, SEQ_LEN, pad_id)
-    print(f"  ✅ Contoh training    : {len(examples)}")
+    print(f"  ✅ Contoh training     : {len(examples)}")
     
     if len(examples) == 0:
         print("  ❌ ERROR: Tidak ada contoh training! Periksa SEQ_LEN dan data.")
@@ -227,14 +264,14 @@ def main():
     print("="*60)
     
     est_params = estimate_model_size(actual_vocab, D_MODEL, N_LAYERS, N_HEADS, D_FF, MAX_LEN)
-    print(f"  🔹 Vocab size    : {actual_vocab}")
-    print(f"  🔹 d_model       : {D_MODEL}")
-    print(f"  🔹 n_heads       : {N_HEADS}")
-    print(f"  🔹 n_layers      : {N_LAYERS}")
-    print(f"  🔹 d_ff          : {D_FF}")
-    print(f"  🔹 max_len       : {MAX_LEN}")
-    print(f"  🔹 dropout       : {DROPOUT}")
-    print(f"  📊 Est. parameter: {est_params:,}")
+    print(f"  🔹 Vocab size     : {actual_vocab}")
+    print(f"  🔹 d_model        : {D_MODEL}")
+    print(f"  🔹 n_heads        : {N_HEADS}")
+    print(f"  🔹 n_layers       : {N_LAYERS}")
+    print(f"  🔹 d_ff           : {D_FF}")
+    print(f"  🔹 max_len        : {MAX_LEN}")
+    print(f"  🔹 dropout        : {DROPOUT}")
+    print(f"  📊 Est. parameter : {est_params:,}")
     
     model = MiniGPT(
         vocab_size=actual_vocab,
@@ -248,13 +285,12 @@ def main():
     model.set_training(True)
     print(f"  ✅ Model siap (mode: TRAINING)")
     
-    # Hitung parameter aktual
     all_params = model.parameters()
     print(f"  📊 Parameter aktual: {len(all_params)} tensor")
-    print_memory_info("SETELAH INISIALISASI MODEL")
+    print_memory_info("SETELAH MODEL")
     
     # ============================================================
-    # 5. INISIALISASI OPTIMIZER & SCHEDULER
+    # 5. OPTIMIZER & SCHEDULER
     # ============================================================
     print("\n" + "="*60)
     print("⚙️  5. OPTIMIZER & SCHEDULER")
@@ -264,58 +300,53 @@ def main():
     scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
                                       total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
     
-    print(f"  🔹 Optimizer     : AdamW")
-    print(f"  🔹 LR awal       : {LR}")
-    print(f"  🔹 Weight decay  : 0.01")
-    print(f"  🔹 Scheduler     : Warmup + Cosine Decay")
-    print(f"  🔹 Warmup steps  : {WARMUP_STEPS}")
-    print(f"  🔹 Total steps   : {TOTAL_STEPS}")
-    print(f"  🔹 Min LR        : 1e-5")
+    print(f"  🔹 Optimizer      : AdamW")
+    print(f"  🔹 LR awal        : {LR}")
+    print(f"  🔹 Weight decay   : 0.01")
+    print(f"  🔹 Scheduler      : Warmup + Cosine Decay")
+    print(f"  🔹 Warmup steps   : {WARMUP_STEPS}")
+    print(f"  🔹 Total steps    : {TOTAL_STEPS}")
+    print(f"  🔹 Min LR         : 1e-5")
     
     # ============================================================
-    # 6. TRAINING LOOP
+    # 6. TRAINING
     # ============================================================
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
     
     total_batches = max(1, len(examples) // BATCH_SIZE)
-    batches_per_epoch = total_batches
     
-    print(f"  📊 Dataset      : {len(examples)} contoh")
-    print(f"  📦 Batch size   : {BATCH_SIZE}")
-    print(f"  📋 Batch/epoch  : {batches_per_epoch}")
-    print(f"  🔄 Epochs       : {EPOCHS}")
-    print(f"  📊 Total steps  : {EPOCHS * batches_per_epoch} (dibatasi scheduler: {TOTAL_STEPS})")
-    print(f"  📏 Max grad norm: {MAX_GRAD_NORM}")
+    print(f"  📊 Dataset       : {len(examples)} contoh")
+    print(f"  📦 Batch size    : {BATCH_SIZE}")
+    print(f"  📋 Batch/epoch   : {total_batches}")
+    print(f"  🔄 Epochs        : {EPOCHS}")
+    print(f"  📊 Max steps     : {TOTAL_STEPS}")
+    print(f"  📏 Max grad norm : {MAX_GRAD_NORM}")
     
     start_time = time.time()
     global_step = 0
-    
-    # Untuk tracking progress
     best_loss = float('inf')
     history = []
     
-    print("\n" + "-"*60)
-    print("▶️  MEMULAI TRAINING...")
-    print("-"*60)
+    print("\n▶️  MEMULAI TRAINING...")
+    print("-" * 60)
     
     for epoch in range(1, EPOCHS + 1):
         epoch_start = time.time()
         total_loss = 0.0
         n_batches = 0
         
-        print(f"\n┌──────────────────────────────────────────────────────────┐")
-        print(f"│ EPOCH {epoch}/{EPOCHS}                                          │")
-        print(f"├──────────┬────────────┬──────────┬──────────┬──────────────┤")
-        print(f"│  Batch   │    Loss    │ Grad Norm│    LR    │   Memori     │")
-        print(f"├──────────┼────────────┼──────────┼──────────┼──────────────┤")
+        print(f"\n┌───────────────────────────────────────────────────────────┐")
+        print(f"│ EPOCH {epoch}/{EPOCHS}                                               │")
+        print(f"├────────┬───────────┬──────────┬───────────┬───────────────┤")
+        print(f"│ Batch  │   Loss    │ Grad Norm│    LR     │   RAM Proses  │")
+        print(f"├────────┼───────────┼──────────┼───────────┼───────────────┤")
         
         for batch in iter_batches(examples, BATCH_SIZE, shuffle=True):
             if len(batch) == 0:
                 continue
             
-            # Train satu batch
             loss, grad_norm = train_batch(model, optimizer, batch, scheduler=scheduler,
                                           max_grad_norm=MAX_GRAD_NORM)
             
@@ -323,43 +354,43 @@ def main():
             n_batches += 1
             global_step += 1
             
-            # Update best loss
             if loss < best_loss:
                 best_loss = loss
             
-            # Info memori
-            mem = get_memory_info()
-            mem_str = f"{mem['process_mb']:.0f} MB"
+            # Info RAM (ringkas)
+            mem_mb = get_process_memory_mb()
+            if mem_mb > 0:
+                mem_str = f"{mem_mb:.0f} MB"
+            else:
+                mem_str = "N/A"
             
-            # Cetak progress setiap batch
-            print(f"│ {n_batches:4d}/{batches_per_epoch:<4d} "
-                  f"│ {loss:10.4f} "
-                  f"│ {grad_norm:8.4f} "
-                  f"│ {optimizer.lr:.8f} "
-                  f"│ {mem_str:>10s}   │")
+            # Progress per batch
+            if n_batches <= 5 or n_batches % 5 == 0 or n_batches == total_batches:
+                print(f"│ {n_batches:3d}/{total_batches:<3d} "
+                      f"│ {loss:9.4f} "
+                      f"│ {grad_norm:8.4f} "
+                      f"│ {optimizer.lr:.7f} "
+                      f"│ {mem_str:>11s}    │")
             
-            # Cek batas total steps
-            if scheduler.get_step_num() >= TOTAL_STEPS:
-                print(f"├──────────┴────────────┴──────────┴──────────┴──────────────┤")
-                print(f"│ ⏰ Batas TOTAL_STEPS ({TOTAL_STEPS}) tercapai.               │")
-                print(f"└──────────────────────────────────────────────────────────┘")
+            if scheduler.step_num >= TOTAL_STEPS:
                 break
         
-        # Akhir epoch
+        # Ringkasan epoch
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / max(1, n_batches)
-        
         elapsed_total = time.time() - start_time
         eta = (elapsed_total / global_step) * (TOTAL_STEPS - global_step) if global_step > 0 else 0
         
-        print(f"├──────────┴────────────┴──────────┴──────────┴──────────────┤")
-        print(f"│ ✅ Epoch {epoch}/{EPOCHS} selesai                                    │")
-        print(f"│    Avg Loss   : {avg_loss:.4f}                                  │")
-        print(f"│    Best Loss  : {best_loss:.4f}                                  │")
-        print(f"│    Waktu      : {format_time(epoch_time)}                          │")
-        print(f"│    Step       : {global_step}/{TOTAL_STEPS}                              │")
-        print(f"│    ETA        : {format_time(eta)}                          │")
-        print(f"└──────────────────────────────────────────────────────────┘")
+        print(f"├────────┴───────────┴──────────┴───────────┴───────────────┤")
+        print(f"│ ✅ Epoch {epoch}/{EPOCHS} selesai                                     │")
+        print(f"│    Avg Loss     : {avg_loss:.4f}                                   │")
+        print(f"│    Best Loss    : {best_loss:.4f}                                   │")
+        print(f"│    Waktu Epoch  : {format_time(epoch_time)}                      │")
+        print(f"│    Step         : {global_step}/{TOTAL_STEPS}                             │")
+        if eta > 0 and global_step < TOTAL_STEPS:
+            print(f"│    ETA          : {format_time(eta)}                      │")
+        print_memory_info(f"AKHIR EPOCH {epoch}", show_system=False)
+        print(f"└───────────────────────────────────────────────────────────┘")
         
         history.append({
             'epoch': epoch,
@@ -370,33 +401,32 @@ def main():
             'time': format_time(epoch_time)
         })
         
-        # Cek batas total steps
-        if scheduler.get_step_num() >= TOTAL_STEPS:
+        if scheduler.step_num >= TOTAL_STEPS:
             print(f"\n⏰ Training berhenti: mencapai batas {TOTAL_STEPS} steps.")
             break
     
     # ============================================================
-    # 7. RINGKASAN TRAINING
+    # 7. RINGKASAN
     # ============================================================
     total_time = time.time() - start_time
     
     print("\n" + "="*60)
     print("📊 RINGKASAN TRAINING")
     print("="*60)
-    print(f"  ⏱️  Total waktu      : {format_time(total_time)}")
-    print(f"  📋 Total steps       : {global_step}")
-    print(f"  📉 Loss terendah     : {best_loss:.4f}")
-    print(f"  📈 LR terakhir       : {optimizer.lr:.8f}")
-    print(f"  🔄 Epoch selesai     : {epoch}/{EPOCHS}")
-    print(f"  ⏱️  Rata-rata/batch  : {format_time(total_time / max(1, global_step))}")
+    print(f"  ⏱️  Total waktu        : {format_time(total_time)}")
+    print(f"  📋 Total steps         : {global_step}")
+    print(f"  📉 Loss terendah       : {best_loss:.4f}")
+    print(f"  📈 LR terakhir         : {optimizer.lr:.8f}")
+    print(f"  🔄 Epoch selesai       : {epoch}/{EPOCHS}")
+    print(f"  ⏱️  Rata-rata per step : {format_time(total_time / max(1, global_step))}")
     
     if len(history) > 0:
-        print(f"\n  Riwayat per-epoch:")
-        print(f"  {'Epoch':<8} {'Avg Loss':<12} {'Best':<12} {'LR':<12} {'Waktu':<15}")
-        print(f"  {'-'*55}")
+        print(f"\n  📜 Riwayat per-epoch:")
+        print(f"  {'Epoch':<8} {'Avg Loss':<12} {'Best':<12} {'LR':<14} {'Waktu':<20}")
+        print(f"  {'-'*65}")
         for h in history:
             print(f"  {h['epoch']:<8} {h['avg_loss']:<12.4f} {h['best_loss']:<12.4f} "
-                  f"{h['lr']:<12.8f} {h['time']:<15}")
+                  f"{h['lr']:<14.8f} {h['time']:<20}")
     
     print_memory_info("SETELAH TRAINING")
     
@@ -420,17 +450,20 @@ def main():
         "dropout": DROPOUT
     }
     
-    t0 = time.time()
     save_checkpoint(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler,
                     tokenizer=tokenizer, config=config)
-    save_time = time.time() - t0
     
-    file_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
-    
-    print(f"  💾 Checkpoint      : {checkpoint_path}")
-    print(f"  📏 Ukuran file     : {file_size_mb:.2f} MB")
-    print(f"  ⏱️  Waktu simpan    : {format_time(save_time)}")
-    print(f"  ✅ Model berhasil disimpan!")
+    if os.path.exists(checkpoint_path):
+        file_size_kb = os.path.getsize(checkpoint_path) / 1024.0
+        file_size_mb = file_size_kb / 1024.0
+        print(f"  💾 Checkpoint    : {checkpoint_path}")
+        if file_size_mb >= 1.0:
+            print(f"  📏 Ukuran file   : {file_size_mb:.2f} MB")
+        else:
+            print(f"  📏 Ukuran file   : {file_size_kb:.1f} KB")
+        print(f"  ✅ Model berhasil disimpan!")
+    else:
+        print(f"  ❌ Gagal menyimpan checkpoint!")
     
     # ============================================================
     # 9. TES GENERATE
