@@ -15,7 +15,7 @@ BATCH_SIZE = 8
 EPOCHS = 2
 LR = 0.01
 WARMUP_STEPS = 30
-TOTAL_STEPS = 200          # akan digunakan jika training baru
+TOTAL_STEPS = 200          # digunakan saat training baru
 ADDITIONAL_STEPS = 100     # jika resume, tambah steps sebanyak ini
 MAX_GRAD_NORM = 1.0
 D_MODEL = 4
@@ -110,8 +110,6 @@ def main():
     # --- Parsing command line ---
     if len(sys.argv) < 2:
         print("Penggunaan: python3 training.py <data.json> [checkpoint.json]")
-        print("  - data.json       : file data latih")
-        print("  - checkpoint.json : (opsional) file checkpoint untuk melanjutkan training")
         return
 
     data_file = sys.argv[1]
@@ -128,9 +126,7 @@ def main():
     print("🚀 MINIGPT TRAINING" + (" (RESUME)" if resume_checkpoint else ""))
     print("="*60)
 
-    # ============================================================
-    # 1. LOAD DATA
-    # ============================================================
+    # 1. Load data
     print_memory_info("SEBELUM LOAD DATA")
     print("\n" + "="*60)
     print("📂 1. MEMUAT DATA")
@@ -146,11 +142,8 @@ def main():
     print(f"  Rata-rata      : {avg_chars:.1f} karakter/kalimat")
     print_memory_info("SETELAH LOAD DATA")
 
-    # ============================================================
-    # 2. TOKENIZER (baru atau dari checkpoint)
-    # ============================================================
+    # 2. Tokenizer (baru atau dari checkpoint)
     if resume_checkpoint:
-        # Load checkpoint untuk mendapatkan tokenizer dan status training
         print("\n" + "="*60)
         print("📦 MEMUAT CHECKPOINT")
         print("="*60)
@@ -160,8 +153,7 @@ def main():
         print(f"  Vocab size     : {len(tokenizer.vocab)}")
         print(f"  Step terakhir  : {scheduler.step_num}")
 
-        # Pastikan kita tambah langkah training
-        # Gunakan ADDITIONAL_STEPS, scheduler.total_steps akan diperbarui
+        # Tambah langkah
         scheduler.total_steps = scheduler.step_num + ADDITIONAL_STEPS
         print(f"  Tambah steps   : {ADDITIONAL_STEPS}")
         print(f"  Total steps baru: {scheduler.total_steps}")
@@ -182,9 +174,7 @@ def main():
         print(f"  10 token pertama      : {[t[0] for t in vocab_items]}")
         print_memory_info("SETELAH TOKENIZER")
 
-    # ============================================================
-    # 3. ENCODE & BUILD DATASET
-    # ============================================================
+    # 3. Encode & build dataset
     print("\n" + "="*60)
     print("🔢 3. ENCODE & BUILD DATASET")
     print("="*60)
@@ -207,9 +197,7 @@ def main():
         return
     print_memory_info("SETELAH BUILD DATASET")
 
-    # ============================================================
-    # 4. INISIALISASI MODEL (hanya jika training baru)
-    # ============================================================
+    # 4. Inisialisasi model (hanya jika training baru)
     if not resume_checkpoint:
         print("\n" + "="*60)
         print("🧠 4. INISIALISASI MODEL")
@@ -243,6 +231,7 @@ def main():
         print("⚙️  5. OPTIMIZER & SCHEDULER")
         print("="*60)
         optimizer = AdamW(all_params, lr=LR, weight_decay=0.01)
+        # Gunakan TOTAL_STEPS global (tanpa konflik)
         scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
                                           total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
         print(f"  Optimizer      : AdamW")
@@ -260,12 +249,9 @@ def main():
         model.set_training(True)
         print(f"  Model siap, training mode aktif.")
         print(f"  Optimizer & scheduler dari checkpoint.")
-        # pastikan total steps sesuai (sudah di-set di atas)
-        TOTAL_STEPS = scheduler.total_steps
+        # Tidak perlu mengubah TOTAL_STEPS global, gunakan scheduler.total_steps saja
 
-    # ============================================================
     # 6. TRAINING
-    # ============================================================
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
@@ -336,7 +322,7 @@ def main():
     print(f"  Total steps      : {global_step}")
     print(f"  Best loss        : {best_loss:.4f}")
     print(f"  Last LR          : {optimizer.lr:.8f}")
-    print(f"  Steps awal       : {scheduler.step_num - global_step + scheduler.step_num}")  # info tambahan
+    print(f"  Steps awal       : {scheduler.step_num - global_step + scheduler.step_num}")
     if history:
         print("\n  Riwayat per-epoch:")
         print("  Epoch  Avg Loss   Best Loss   LR           Waktu")
@@ -345,9 +331,7 @@ def main():
             print(f"  {h['epoch']:3d}    {h['avg_loss']:.4f}     {h['best_loss']:.4f}   {h['lr']:.8f}   {h['time']}")
     print_memory_info("SETELAH TRAINING")
 
-    # ============================================================
     # 7. SAVE CHECKPOINT BARU
-    # ============================================================
     print("\n" + "="*60)
     print("💾 7. MENYIMPAN CHECKPOINT BARU")
     print("="*60)
