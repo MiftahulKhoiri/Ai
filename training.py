@@ -1,3 +1,4 @@
+import sys
 import json
 import os
 import glob
@@ -9,21 +10,21 @@ from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpo
 # ============================================================
 # KONFIGURASI TRAINING (dapat disesuaikan)
 # ============================================================
-DATA_FILE = "data.json"          # file JSON berisi list kalimat latih (string)
-SEQ_LEN = 16                     # panjang maksimal urutan token (gunakan 16 untuk data pendek)
-BATCH_SIZE = 8                   # jumlah contoh per batch (kecilkan jika OOM atau lambat)
-EPOCHS = 2                      # berapa kali seluruh data dilewati (epoch)
-LR = 0.01                        # learning rate awal (sebelum warmup/cosine decay)
-WARMUP_STEPS = 30                # jumlah langkah pemanasan (linear naik dari 0 ke LR)
-TOTAL_STEPS = 200                # total langkah training (cukup untuk dataset kecil)
-MAX_GRAD_NORM = 1.0              # batas maksimal norm gradien (gradient clipping)
-D_MODEL = 4                      # dimensi embedding (kecilkan agar cepat, 8 untuk uji coba)
-N_HEADS = 2                      # jumlah head dalam multi-head attention (harus membagi d_model)
-N_LAYERS = 1                     # jumlah layer transformer (1 layer untuk data kecil)
-D_FF = 16                        # dimensi feed-forward inner layer
-MAX_LEN = 32                     # panjang maksimum posisi (sesuaikan dengan SEQ_LEN)
-DROPOUT = 0.1                    # probabilitas dropout (regularisasi)
-VOCAB_SIZE = 200                 # ukuran kosakata tokenizer BPE (kecilkan untuk mempercepat)
+# DATA_FILE tidak lagi didefinisikan di sini, akan diambil dari argumen CLI
+SEQ_LEN = 16
+BATCH_SIZE = 8
+EPOCHS = 2
+LR = 0.01
+WARMUP_STEPS = 30
+TOTAL_STEPS = 200
+MAX_GRAD_NORM = 1.0
+D_MODEL = 4
+N_HEADS = 2
+N_LAYERS = 1
+D_FF = 16
+MAX_LEN = 32
+DROPOUT = 0.1
+VOCAB_SIZE = 200
 
 # ============================================================
 # FUNGSI MEMORI (Tanpa psutil, untuk Termux/Android)
@@ -162,6 +163,17 @@ def test_generate(model, tokenizer):
 # ============================================================
 
 def main():
+    # Ambil nama file data dari command line
+    if len(sys.argv) > 1:
+        data_file = sys.argv[1]
+    else:
+        data_file = "data.json"   # default jika tidak diberikan
+
+    # Validasi file
+    if not os.path.exists(data_file):
+        print(f"❌ ERROR: File '{data_file}' tidak ditemukan!")
+        return
+
     print("="*60)
     print("🚀 MINIGPT TRAINING")
     print("="*60)
@@ -169,20 +181,20 @@ def main():
     print_memory_info("SEBELUM LOAD DATA")
 
     # ============================================================
-    # 1. LOAD DATA (tampilan sederhana)
+    # 1. LOAD DATA
     # ============================================================
     print("\n" + "="*60)
     print("📂 1. MEMUAT DATA")
     print("="*60)
 
     monitor_memory()
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(data_file, "r", encoding="utf-8") as f:
         sentences = json.load(f)
 
     total_chars = sum(len(s) for s in sentences)
     avg_chars = total_chars / max(1, len(sentences))
 
-    print(f"  File           : {DATA_FILE}")
+    print(f"  File           : {data_file}")
     print(f"  Jumlah kalimat : {len(sentences)}")
     print(f"  Total karakter : {total_chars}")
     print(f"  Rata-rata      : {avg_chars:.1f} karakter/kalimat")
@@ -298,7 +310,7 @@ def main():
     print(f"  Min LR         : 1e-5")
 
     # ============================================================
-    # 6. TRAINING (tampilan ringkas & langsung)
+    # 6. TRAINING
     # ============================================================
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
@@ -325,7 +337,6 @@ def main():
         total_loss = 0.0
         n_batches = 0
 
-        # Print header epoch
         print(f"Epoch {epoch}/{EPOCHS}")
 
         for batch in iter_batches(examples, BATCH_SIZE, shuffle=True):
@@ -342,18 +353,15 @@ def main():
             if loss < best_loss:
                 best_loss = loss
 
-            # Info RAM
             mem_mb = get_process_memory_mb()
             mem_str = f"{mem_mb:.0f}MB" if mem_mb > 0 else "N/A"
 
-            # Cetak per batch (setiap batch)
             print(f"  Batch {n_batches:3d}/{total_batches:<3d} : "
                   f"loss={loss:7.4f}  grad={grad_norm:6.4f}  lr={optimizer.lr:.7f}  RAM={mem_str}")
 
             if scheduler.step_num >= TOTAL_STEPS:
                 break
 
-        # Ringkasan epoch
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / max(1, n_batches)
         elapsed_total = time.time() - start_time
@@ -364,7 +372,7 @@ def main():
               f"time={format_time(epoch_time)}  step={global_step}/{TOTAL_STEPS}")
         if eta > 0 and global_step < TOTAL_STEPS:
             print(f"     ETA = {format_time(eta)}")
-        print()  # baris kosong antar epoch
+        print()
 
         history.append({
             'epoch': epoch,
@@ -380,7 +388,7 @@ def main():
             break
 
     # ============================================================
-    # 7. RINGKASAN (lebih ringkas)
+    # 7. RINGKASAN
     # ============================================================
     total_time = time.time() - start_time
 
