@@ -11,8 +11,9 @@ from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpo
 # KONFIGURASI TRAINING (dapat disesuaikan)
 # ============================================================
 SEQ_LEN = 16
-BATCH_SIZE = 8
-EPOCHS = 1
+BATCH_SIZE = 2          # <-- TURUNKAN dari 8 ke 2 agar hemat RAM
+EPOCHS = 50             # <-- NAIKKAN dari 1 ke 50 untuk pembelajaran lebih lama
+PATIENCE = 3            # <-- TAMBAHKAN: Early Stopping jika loss tidak membaik 5 epoch berturut-turut
 LR = 0.01
 WARMUP_STEPS = 30
 TOTAL_STEPS = 200          # digunakan saat training baru
@@ -269,6 +270,7 @@ def main():
     start_time = time.time()
     global_step = scheduler.step_num
     best_loss = float('inf')
+    wait = 0                    # <-- TAMBAHKAN: counter untuk Early Stopping
     history = []
 
     print("\n▶️  MEMULAI TRAINING...\n")
@@ -312,6 +314,21 @@ def main():
             'step': global_step,
             'time': format_time(epoch_time)
         })
+
+        # ========== EARLY STOPPING (TAMBAHKAN KODE INI) ==========
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            wait = 0  # Reset karena loss membaik
+            print(f"  📈 Loss membaik! Best loss sekarang: {best_loss:.4f}")
+        else:
+            wait += 1
+            print(f"  ⏳ Early Stopping: {wait}/{PATIENCE} (loss tidak membaik)")
+
+        # Jika sudah melewati batas sabar, hentikan training
+        if wait >= PATIENCE:
+            print(f"🛑 Early stopping dipicu setelah {PATIENCE} epoch tanpa perbaikan!")
+            break
+        # ========================================================
 
         if scheduler.step_num >= total_steps:
             print(f"⏰ Training berhenti: mencapai batas {total_steps} steps.")
