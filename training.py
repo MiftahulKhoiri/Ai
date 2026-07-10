@@ -12,7 +12,7 @@ from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpo
 # ============================================================
 SEQ_LEN = 16
 BATCH_SIZE = 8
-EPOCHS = 2
+EPOCHS = 1
 LR = 0.01
 WARMUP_STEPS = 30
 TOTAL_STEPS = 200          # digunakan saat training baru
