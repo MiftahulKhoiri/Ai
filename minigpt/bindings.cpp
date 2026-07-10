@@ -56,14 +56,21 @@ PYBIND11_MODULE(minigpt, m) {
         .def("decode", &ByteLevelBPETokenizer::decode)
         .def("save", &ByteLevelBPETokenizer::save)
         .def("load", &ByteLevelBPETokenizer::load)
-        .def_readwrite("vocab", &ByteLevelBPETokenizer::vocab)
-        .def_readwrite("inv_vocab", &ByteLevelBPETokenizer::inv_vocab)
-        .def_readwrite("merge_order", &ByteLevelBPETokenizer::merge_order);
+        // ===== PERUBAHAN: Gunakan getter/setter =====
+        .def_property("vocab",
+            &ByteLevelBPETokenizer::get_vocab,
+            &ByteLevelBPETokenizer::set_vocab)
+        .def_property("inv_vocab",
+            &ByteLevelBPETokenizer::get_inv_vocab,
+            &ByteLevelBPETokenizer::set_inv_vocab)
+        .def_property("merge_order",
+            &ByteLevelBPETokenizer::get_merge_order,
+            &ByteLevelBPETokenizer::set_merge_order);
 
     // ============================================================
     // Layers
     // ============================================================
-    
+
     // Dropout
     py::class_<Dropout>(m, "Dropout")
         .def(py::init<double>(), py::arg("p") = 0.1)
@@ -161,10 +168,19 @@ PYBIND11_MODULE(minigpt, m) {
         .def("step", &AdamW::step)
         .def("zero_grad", &AdamW::zero_grad)
         .def_readwrite("lr", &AdamW::lr)
-        .def_readwrite("params", &AdamW::params)
-        .def_readwrite("m", &AdamW::m)
-        .def_readwrite("v", &AdamW::v)
-        .def_readwrite("t", &AdamW::t);
+        // ===== PERUBAHAN: Gunakan getter/setter =====
+        .def_property("params",
+            &AdamW::get_params,
+            &AdamW::set_params)
+        .def_property("m",
+            &AdamW::get_m,
+            &AdamW::set_m)
+        .def_property("v",
+            &AdamW::get_v,
+            &AdamW::set_v)
+        .def_property("t",
+            &AdamW::get_t,
+            &AdamW::set_t);
 
     // Scheduler
     py::class_<WarmupCosineScheduler>(m, "WarmupCosineScheduler")
@@ -175,18 +191,21 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("base_lr"), 
              py::arg("min_lr") = 1e-5)
         .def("step", &WarmupCosineScheduler::step)
-        .def_readwrite("step_num", &WarmupCosineScheduler::step_num);
+        // ===== PERUBAHAN: Gunakan getter/setter =====
+        .def_property("step_num",
+            &WarmupCosineScheduler::get_step_num,
+            &WarmupCosineScheduler::set_step_num);
 
     // Loss and utility functions
     m.def("cross_entropy_loss", &cross_entropy_loss,
           py::arg("logits_seq"), 
           py::arg("target_ids"), 
           py::arg("pad_mask"));
-    
+
     m.def("clip_grad_norm", &clip_grad_norm,
           py::arg("params"), 
           py::arg("max_norm"));
-    
+
     m.def("sample_from_logits", &sample_from_logits,
           py::arg("logits"), 
           py::arg("temperature"), 
