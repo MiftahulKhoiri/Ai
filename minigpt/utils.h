@@ -1,4 +1,4 @@
 #pragma once
-#include "value.h"
 #include <vector>
+#include "value.h"
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& logits);
