@@ -110,8 +110,6 @@ def main():
     # --- Parsing command line ---
     if len(sys.argv) < 2:
         print("Penggunaan: python3 training.py <data.json> [checkpoint.json]")
-        print("  - data.json       : file data latih")
-        print("  - checkpoint.json : (opsional) melanjutkan training dari checkpoint")
         return
 
     data_file = sys.argv[1]
@@ -144,23 +142,25 @@ def main():
     print(f"  Rata-rata      : {avg_chars:.1f} karakter/kalimat")
     print_memory_info("SETELAH LOAD DATA")
 
-    # 2. Tokenizer dan model (resume atau baru)
+    # 2. Tokenizer (baru atau dari checkpoint)
+    # total_steps dikelola sebagai variabel Python biasa (BUKAN atribut pada
+    # object scheduler C++, karena WarmupCosineScheduler tidak mengekspos itu).
     if resume_checkpoint:
         print("\n" + "="*60)
         print("📦 MEMUAT CHECKPOINT")
         print("="*60)
-        model, optimizer, scheduler, tokenizer, config = load_checkpoint(resume_checkpoint)
+        model, optimizer, scheduler, tokenizer, config, total_steps = load_checkpoint(
+            resume_checkpoint,
+            additional_steps=ADDITIONAL_STEPS,
+            warmup_steps=WARMUP_STEPS,
+            min_lr=1e-5
+        )
         print(f"  Checkpoint     : {resume_checkpoint}")
+        print(f"  Config         : {config}")
         print(f"  Vocab size     : {len(tokenizer.vocab)}")
         print(f"  Step terakhir  : {scheduler.step_num}")
-
-        # Pastikan ada atribut total_steps
-        if not hasattr(scheduler, 'total_steps'):
-            scheduler.total_steps = scheduler.step_num + ADDITIONAL_STEPS
-        else:
-            scheduler.total_steps = scheduler.step_num + ADDITIONAL_STEPS
         print(f"  Tambah steps   : {ADDITIONAL_STEPS}")
-        print(f"  Total steps baru: {scheduler.total_steps}")
+        print(f"  Total steps baru: {total_steps}")
     else:
         # Training baru: latih tokenizer dari data
         print("\n" + "="*60)
@@ -173,16 +173,40 @@ def main():
         tokenizer = ByteLevelBPETokenizer()
         tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
         print(f"  Tokenizer selesai     : {format_time(time.time()-t0)}")
-        actual_vocab = len(tokenizer.vocab)
-        print(f"  Vocab size aktual     : {actual_vocab}")
+        print(f"  Vocab size aktual     : {len(tokenizer.vocab)}")
         vocab_items = list(tokenizer.vocab.items())[:10]
         print(f"  10 token pertama      : {[t[0] for t in vocab_items]}")
         print_memory_info("SETELAH TOKENIZER")
 
-        # Inisialisasi model
+    # 3. Encode & build dataset
+    print("\n" + "="*60)
+    print("🔢 3. ENCODE & BUILD DATASET")
+    print("="*60)
+    pad_id = tokenizer.vocab['<pad>']
+    tokenized = []
+    total_tokens = 0
+    for sent in sentences:
+        ids = tokenizer.encode(sent, add_bos=True, add_eos=True)
+        tokenized.append(ids)
+        total_tokens += len(ids)
+    avg_tokens = total_tokens / max(1, len(sentences))
+    print(f"  Total token         : {total_tokens}")
+    print(f"  Rata-rata token     : {avg_tokens:.1f} token/kalimat")
+    print(f"  SEQ_LEN             : {SEQ_LEN}")
+    print(f"  pad_id              : {pad_id}")
+    examples = build_dataset(tokenized, SEQ_LEN, pad_id)
+    print(f"  Contoh training     : {len(examples)}")
+    if len(examples) == 0:
+        print("  ❌ Tidak ada contoh training! Periksa SEQ_LEN dan data.")
+        return
+    print_memory_info("SETELAH BUILD DATASET")
+
+    # 4. Inisialisasi model (hanya jika training baru)
+    if not resume_checkpoint:
         print("\n" + "="*60)
-        print("🧠 3. INISIALISASI MODEL")
+        print("🧠 4. INISIALISASI MODEL")
         print("="*60)
+        actual_vocab = len(tokenizer.vocab)
         est_params = estimate_model_size(actual_vocab, D_MODEL, N_LAYERS, N_HEADS, D_FF, MAX_LEN)
         print(f"  Vocab size     : {actual_vocab}")
         print(f"  d_model        : {D_MODEL}")
@@ -208,44 +232,29 @@ def main():
 
         # Optimizer & scheduler baru
         print("\n" + "="*60)
-        print("⚙️  4. OPTIMIZER & SCHEDULER")
+        print("⚙️  5. OPTIMIZER & SCHEDULER")
         print("="*60)
+        total_steps = TOTAL_STEPS
         optimizer = AdamW(all_params, lr=LR, weight_decay=0.01)
         scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
-                                          total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
-        scheduler.total_steps = TOTAL_STEPS  # atribut tambahan untuk kemudahan
+                                          total_steps=total_steps, base_lr=LR, min_lr=1e-5)
         print(f"  Optimizer      : AdamW")
         print(f"  LR awal        : {LR}")
         print(f"  Weight decay   : 0.01")
         print(f"  Scheduler      : Warmup + Cosine Decay")
         print(f"  Warmup steps   : {WARMUP_STEPS}")
-        print(f"  Total steps    : {TOTAL_STEPS}")
+        print(f"  Total steps    : {total_steps}")
         print(f"  Min LR         : 1e-5")
+    else:
+        # Resume: model, optimizer, scheduler sudah di-load
+        print("\n" + "="*60)
+        print("🔄 MELANJUTKAN TRAINING")
+        print("="*60)
+        model.set_training(True)
+        print(f"  Model siap, training mode aktif.")
+        print(f"  Optimizer & scheduler dari checkpoint.")
 
-    # 3. Encode & build dataset
-    print("\n" + "="*60)
-    print("🔢 5. ENCODE & BUILD DATASET")
-    print("="*60)
-    pad_id = tokenizer.vocab['<pad>']
-    tokenized = []
-    total_tokens = 0
-    for sent in sentences:
-        ids = tokenizer.encode(sent, add_bos=True, add_eos=True)
-        tokenized.append(ids)
-        total_tokens += len(ids)
-    avg_tokens = total_tokens / max(1, len(sentences))
-    print(f"  Total token         : {total_tokens}")
-    print(f"  Rata-rata token     : {avg_tokens:.1f} token/kalimat")
-    print(f"  SEQ_LEN             : {SEQ_LEN}")
-    print(f"  pad_id              : {pad_id}")
-    examples = build_dataset(tokenized, SEQ_LEN, pad_id)
-    print(f"  Contoh training     : {len(examples)}")
-    if len(examples) == 0:
-        print("  ❌ Tidak ada contoh training! Periksa SEQ_LEN dan data.")
-        return
-    print_memory_info("SETELAH BUILD DATASET")
-
-    # 4. TRAINING
+    # 6. TRAINING
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
@@ -254,11 +263,11 @@ def main():
     print(f"  Batch size    : {BATCH_SIZE}")
     print(f"  Batch/epoch   : {total_batches}")
     print(f"  Epochs        : {EPOCHS}")
-    print(f"  Max steps     : {scheduler.total_steps}")
+    print(f"  Max steps     : {total_steps}")
     print(f"  Max grad norm : {MAX_GRAD_NORM}")
 
     start_time = time.time()
-    global_step = scheduler.step_num   # lanjut dari step terakhir jika resume
+    global_step = scheduler.step_num
     best_loss = float('inf')
     history = []
 
@@ -285,14 +294,14 @@ def main():
             print(f"  Batch {n_batches:3d}/{total_batches:<3d} : "
                   f"loss={loss:7.4f}  grad={grad_norm:6.4f}  lr={optimizer.lr:.7f}  RAM={mem_str}")
 
-            if scheduler.step_num >= scheduler.total_steps:
+            if scheduler.step_num >= total_steps:
                 break
 
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / max(1, n_batches)
         print(f"  ✅ Epoch {epoch} selesai : "
               f"avg_loss={avg_loss:.4f}  best={best_loss:.4f}  "
-              f"time={format_time(epoch_time)}  step={global_step}/{scheduler.total_steps}")
+              f"time={format_time(epoch_time)}  step={global_step}/{total_steps}")
         print()
 
         history.append({
@@ -304,8 +313,8 @@ def main():
             'time': format_time(epoch_time)
         })
 
-        if scheduler.step_num >= scheduler.total_steps:
-            print(f"⏰ Training berhenti: mencapai batas {scheduler.total_steps} steps.")
+        if scheduler.step_num >= total_steps:
+            print(f"⏰ Training berhenti: mencapai batas {total_steps} steps.")
             break
 
     total_time = time.time() - start_time
@@ -324,7 +333,7 @@ def main():
             print(f"  {h['epoch']:3d}    {h['avg_loss']:.4f}     {h['best_loss']:.4f}   {h['lr']:.8f}   {h['time']}")
     print_memory_info("SETELAH TRAINING")
 
-    # 5. SAVE CHECKPOINT BARU
+    # 7. SAVE CHECKPOINT BARU
     print("\n" + "="*60)
     print("💾 7. MENYIMPAN CHECKPOINT BARU")
     print("="*60)
@@ -333,22 +342,18 @@ def main():
     config = {
         "vocab_size": len(tokenizer.vocab),
         "d_model": model.d_model,
-        "n_heads": model.n_heads,
-        "n_layers": model.n_layers,
-        "d_ff": model.d_ff,
+        "n_heads": model.n_heads if hasattr(model, 'n_heads') else N_HEADS,
+        "n_layers": model.n_layers if hasattr(model, 'n_layers') else N_LAYERS,
+        "d_ff": model.d_ff if hasattr(model, 'd_ff') else D_FF,
         "max_len": model.max_len,
-        "dropout": model.dropout
+        "dropout": model.dropout if hasattr(model, 'dropout') else DROPOUT
     }
     save_checkpoint(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler,
-                    tokenizer=tokenizer, config=config)
+                    tokenizer=tokenizer, config=config, total_steps=total_steps)
     if os.path.exists(checkpoint_path):
         size_kb = os.path.getsize(checkpoint_path) / 1024
-        if size_kb < 1024:
-            print(f"  Checkpoint    : {checkpoint_path}")
-            print(f"  Ukuran file   : {size_kb:.1f} KB")
-        else:
-            print(f"  Checkpoint    : {checkpoint_path}")
-            print(f"  Ukuran file   : {size_kb/1024:.2f} MB")
+        print(f"  Checkpoint    : {checkpoint_path}")
+        print(f"  Ukuran file   : {size_kb:.1f} KB" if size_kb < 1024 else f"  Ukuran file   : {size_kb/1024:.2f} MB")
         print(f"  Model berhasil disimpan!")
     else:
         print(f"  Gagal menyimpan checkpoint!")
