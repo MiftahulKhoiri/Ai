@@ -88,9 +88,12 @@ def main():
 
     checkpoint_path = sys.argv[1]
 
-    # Muat model, tokenizer, dll. dari checkpoint
-    # load_checkpoint mengembalikan (model, optimizer, scheduler, tokenizer, config)
-    model, _, _, tokenizer, config = load_checkpoint(checkpoint_path)
+    # ============= PERBAIKAN DI SINI =============
+    # load_checkpoint sekarang mengembalikan 6 nilai:
+    # (model, optimizer, scheduler, tokenizer, config, step)
+    # Kita hanya butuh model, tokenizer, dan config; sisanya diabaikan.
+    model, _, _, tokenizer, config, _ = load_checkpoint(checkpoint_path)
+    # =============================================
 
     print(f"Model {checkpoint_path} dimuat. Vocab size: {len(tokenizer.vocab)}")
 
