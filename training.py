@@ -231,9 +231,10 @@ def main():
         print("⚙️  5. OPTIMIZER & SCHEDULER")
         print("="*60)
         optimizer = AdamW(all_params, lr=LR, weight_decay=0.01)
-        # Gunakan TOTAL_STEPS global (tanpa konflik)
         scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
                                           total_steps=TOTAL_STEPS, base_lr=LR, min_lr=1e-5)
+        # Tambahkan atribut total_steps agar konsisten
+        scheduler.total_steps = TOTAL_STEPS
         print(f"  Optimizer      : AdamW")
         print(f"  LR awal        : {LR}")
         print(f"  Weight decay   : 0.01")
@@ -249,7 +250,6 @@ def main():
         model.set_training(True)
         print(f"  Model siap, training mode aktif.")
         print(f"  Optimizer & scheduler dari checkpoint.")
-        # Tidak perlu mengubah TOTAL_STEPS global, gunakan scheduler.total_steps saja
 
     # 6. TRAINING
     print("\n" + "="*60)
@@ -260,11 +260,11 @@ def main():
     print(f"  Batch size    : {BATCH_SIZE}")
     print(f"  Batch/epoch   : {total_batches}")
     print(f"  Epochs        : {EPOCHS}")
-    print(f"  Max steps     : {scheduler.total_steps}")
+    print(f"  Max steps     : {scheduler.total_steps}")   # sekarang aman
     print(f"  Max grad norm : {MAX_GRAD_NORM}")
 
     start_time = time.time()
-    global_step = scheduler.step_num  # mulai dari step terakhir jika resume
+    global_step = scheduler.step_num
     best_loss = float('inf')
     history = []
 
