@@ -1,0 +1,100 @@
+// tensor.h
+#pragma once
+#include <vector>
+#include <numeric>
+#include <stdexcept>
+#include <cassert>
+#include <functional>
+#include "simd.h"
+
+namespace tnsr {
+
+template<typename T>
+class Tensor {
+public:
+  std::vector<T> data;
+  std::vector<size_t> shape;
+  std::vector<size_t> strides;
+
+  Tensor() = default;
+  Tensor(const std::vector<size_t>& shp) : shape(shp) {
+    size_t total = std::accumulate(shp.begin(), shp.end(), 1UL, std::multiplies<>());
+    data.resize(total);
+    compute_strides();
+  }
+
+  template<typename Iter>
+  Tensor(const std::vector<size_t>& shp, Iter begin, Iter end) : shape(shp) {
+    data.assign(begin, end);
+    if (data.size() != total_size()) throw std::runtime_error("Size mismatch");
+    compute_strides();
+  }
+
+  size_t total_size() const {
+    return std::accumulate(shape.begin(), shape.end(), 1UL, std::multiplies<>());
+  }
+
+  // Operator lazy (expression template) – di sini kami langsung evaluasi untuk sederhana,
+  // namun bisa diperluas dengan ET. Kami sediakan versi eager dengan SIMD.
+  Tensor operator+(const Tensor& other) const {
+    assert(shape == other.shape);
+    Tensor result(shape);
+    const T* src1 = data.data();
+    const T* src2 = other.data.data();
+    T* dst = result.data.data();
+    size_t N = data.size();
+    // SIMD loop jika T adalah float atau double
+    if constexpr (std::is_same_v<T, float>) {
+      constexpr size_t W = SIMD_FLOAT_WIDTH;
+      size_t i = 0;
+      for (; i + W <= N; i += W) {
+        auto a = simd::load(src1 + i, simd::unaligned);
+        auto b = simd::load(src2 + i, simd::unaligned);
+        simd::store(dst + i, simd::add(a, b), simd::unaligned);
+      }
+      for (; i < N; ++i) dst[i] = src1[i] + src2[i];
+    } else if constexpr (std::is_same_v<T, double>) {
+      constexpr size_t W = SIMD_DOUBLE_WIDTH;
+      size_t i = 0;
+      for (; i + W <= N; i += W) {
+        auto a = simd::load(src1 + i, simd::unaligned);
+        auto b = simd::load(src2 + i, simd::unaligned);
+        simd::store(dst + i, simd::add(a, b), simd::unaligned);
+      }
+      for (; i < N; ++i) dst[i] = src1[i] + src2[i];
+    } else {
+      for (size_t i = 0; i < N; ++i) dst[i] = src1[i] + src2[i];
+    }
+    return result;
+  }
+
+  // ... operator-, *, / mengikuti pola serupa ...
+
+  // Indexing multi-dimensi
+  T& operator()(const std::vector<size_t>& indices) {
+    size_t offset = 0;
+    for (size_t i = 0; i < indices.size(); ++i) offset += indices[i] * strides[i];
+    return data[offset];
+  }
+  const T& operator()(const std::vector<size_t>& indices) const {
+    size_t offset = 0;
+    for (size_t i = 0; i < indices.size(); ++i) offset += indices[i] * strides[i];
+    return data[offset];
+  }
+
+private:
+  void compute_strides() {
+    strides.resize(shape.size());
+    if (shape.empty()) return;
+    strides.back() = 1;
+    for (int i = shape.size()-2; i >= 0; --i) {
+      strides[i] = strides[i+1] * shape[i+1];
+    }
+  }
+};
+
+// Contoh eksplisit instansiasi (deklarasi)
+extern template class Tensor<float>;
+extern template class Tensor<double>;
+
+} // namespace tnsr
