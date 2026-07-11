@@ -2,30 +2,37 @@ from setuptools import setup
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 import sys
 
-# Jika dijalankan tanpa argumen:
-# python setup.py
-# otomatis menjadi:
-# python setup.py build_ext --inplace
+# Jika dijalankan tanpa argumen, otomatis build in-place
 if len(sys.argv) == 1:
     sys.argv.extend(["build_ext", "--inplace"])
+
+# Daftar semua file .cpp yang diperlukan (kecuali main.cpp, train.cpp, dan Value.cpp duplikat)
+sources = [
+    "minigpt/autograd.cpp",
+    "minigpt/backward.cpp",
+    "minigpt/bindings.cpp",
+    "minigpt/generation.cpp",
+    "minigpt/graph.cpp",
+    "minigpt/layers.cpp",
+    "minigpt/matrix.cpp",
+    "minigpt/model.cpp",
+    "minigpt/ops.cpp",
+    "minigpt/optim.cpp",
+    "minigpt/random.cpp",
+    "minigpt/simd.cpp",
+    "minigpt/tensor.cpp",
+    "minigpt/tokenizer.cpp",
+    "minigpt/utils.cpp",
+    "minigpt/value.cpp",   # huruf kecil, bukan Value.cpp
+]
 
 ext_modules = [
     Pybind11Extension(
         "minigpt",
-        [
-            "minigpt/value.cpp",
-            "minigpt/utils.cpp",
-            "minigpt/tokenizer.cpp",
-            "minigpt/layers.cpp",
-            "minigpt/model.cpp",
-            "minigpt/optim.cpp",
-            "minigpt/generation.cpp",
-            "minigpt/bindings.cpp",
-        ],
-        include_dirs=[
-            "minigpt",
-        ],
+        sources=sources,
+        include_dirs=["minigpt"],
         cxx_std=17,
+        # extra_compile_args=["-O3", "-march=native"],  # aktifkan jika perlu
     ),
 ]
 
