@@ -13,16 +13,16 @@ struct Value : std::enable_shared_from_this<Value> {
     double grad;
 
     std::function<void()> _backward;
-    std::vector<std::shared_ptr<Value>> _prev;
+    std::vector<Value::Ptr> _prev;
     std::string _op;
 
     explicit Value(
         double data,
-        std::vector<std::shared_ptr<Value>> children = {},
+        std::vector<Value::Ptr> children = {},
         std::string op = ""
     );
 
-    static std::shared_ptr<Value> create(double data);
+    static Value::Ptr create(double data);
 
     void backward();
     std::string repr() const;
