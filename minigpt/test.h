@@ -6,6 +6,8 @@
 #include <functional>
 #include <chrono>
 #include <cassert>
+#include <cmath>
+#include <algorithm>
 
 #define TEST_ASSERT(condition) \
     if (!(condition)) { \
@@ -31,22 +33,27 @@ public:
         static TestRunner runner;
         return runner;
     }
-    
+
     void add_test(const std::string& name, std::function<bool()> test) {
         tests.emplace_back(name, test);
     }
-    
+
     bool run_all() {
         int passed = 0, failed = 0;
         auto start = std::chrono::steady_clock::now();
-        
+
         std::cout << "🧪 Running " << tests.size() << " tests..." << std::endl;
         std::cout << "========================================" << std::endl;
-        
-        for (const auto& [name, test] : tests) {
+
+        // C++17 structured binding - ganti dengan loop manual
+        for (size_t i = 0; i < tests.size(); ++i) {
+            const auto& test_pair = tests[i];
+            const std::string& name = test_pair.first;
+            const auto& test = test_pair.second;
+            
             std::cout << "▶ " << name << " ... ";
             auto test_start = std::chrono::steady_clock::now();
-            
+
             try {
                 if (test()) {
                     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -65,21 +72,21 @@ public:
                 failed++;
             }
         }
-        
+
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
-        
+
         std::cout << "========================================" << std::endl;
         std::cout << "📊 Results: " << passed << " passed, " << failed << " failed" << std::endl;
         std::cout << "⏱️  Time: " << duration.count() << "ms" << std::endl;
-        
+
         return failed == 0;
     }
-    
+
     void print_summary() {
         // Already printed in run_all
     }
-    
+
 private:
     std::vector<std::pair<std::string, std::function<bool()>>> tests;
 };
@@ -93,6 +100,9 @@ private:
         } \
     } test_registrar_##name; \
     bool test_##name()
+
+// Forward declaration untuk run_all_tests
+bool run_all_tests();
 
 // Example test
 /*
