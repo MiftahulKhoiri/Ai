@@ -7,6 +7,9 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <unordered_map>  // TAMBAHKAN INI!
+#include <iostream>
+#include <algorithm>
 
 namespace metrics {
     // Perplexity: exp(loss)
@@ -129,9 +132,10 @@ namespace metrics {
             }
 
             // Print custom metrics
-            for (const auto& [key, values] : metrics) {
+            for (const auto& pair : metrics) {
+                const auto& values = pair.second;
                 if (!values.empty()) {
-                    std::cout << key << ": " << values.back() << std::endl;
+                    std::cout << pair.first << ": " << values.back() << std::endl;
                 }
             }
         }
@@ -152,7 +156,10 @@ namespace metrics {
     class ProgressBar {
     public:
         ProgressBar(int total, const std::string& desc = "Progress")
-            : total(total), desc(desc), current(0), width(50) {
+            : total(total),           // 1. total
+              width(50),              // 2. width
+              desc(desc),             // 3. desc
+              current(0) {            // 4. current
             start_time = std::chrono::steady_clock::now();
         }
 
@@ -191,8 +198,10 @@ namespace metrics {
             std::cout.flush();
         }
 
-        int total, current, width;
+        int total;
+        int width;
         std::string desc;
+        int current;
         std::chrono::steady_clock::time_point start_time;
     };
 }
