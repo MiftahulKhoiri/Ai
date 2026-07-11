@@ -9,7 +9,7 @@ void Graph::add_node(Value::Ptr node) {
 
 void Graph::zero_grad() {
     for (auto& node : _nodes) {
-        node->zero_grad();
+        node->grad = 0.0;
     }
 }
 
