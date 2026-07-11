@@ -1,4 +1,11 @@
+// utils.h
 #pragma once
-#include <vector>
 #include "value.h"
-std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& logits);
+#include <vector>
+#include <memory>
+
+// Fungsi aktivasi
+ValuePtr gelu(const ValuePtr& x);
+
+// Fungsi utility lainnya (jika ada)
+// ...
