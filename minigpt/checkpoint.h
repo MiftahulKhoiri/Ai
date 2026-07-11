@@ -10,6 +10,7 @@
 #include <chrono>
 #include <iomanip>
 #include <algorithm>
+#include <sstream>  // TAMBAHKAN INI!
 
 struct CheckpointData {
     int epoch;
@@ -226,7 +227,7 @@ public:
                              std::filesystem::last_write_time(b);
                   });
 
-        // Keep only max_keep newest - FIX: cast max_keep to size_t
+        // Keep only max_keep newest
         while (files.size() > static_cast<size_t>(max_keep)) {
             std::filesystem::remove(files.back());
             files.pop_back();
