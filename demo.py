@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# demo.py - Menggunakan AdvancedGenerator untuk support temperature, top_k, top_p
+# demo.py - Script untuk chat dengan model MiniGPT
 
 import sys
 import json
@@ -9,7 +9,7 @@ from typing import List, Tuple, Optional
 
 from minigpt import (
     MiniGPT,
-    ByteLevelBPETokenizer,
+    Tokenizer,  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
     generate,
     AdvancedGenerator,
     GenerationConfig,
@@ -23,9 +23,9 @@ from minigpt import (
 # ============================================================
 MAX_CONTEXT_TURNS = 5
 MAX_NEW_TOKENS = 50
-TEMPERATURE = 0.8          # <-- Sekarang BISA digunakan!
-TOP_P = 0.9               # <-- Sekarang BISA digunakan!
-TOP_K = 40                # <-- Sekarang BISA digunakan!
+TEMPERATURE = 0.8
+TOP_P = 0.9
+TOP_K = 40
 SHOW_REASONING = True
 
 # ============================================================
@@ -37,7 +37,7 @@ def load_checkpoint(path: str):
         checkpoint = json.load(f)
     
     # Restore tokenizer
-    tokenizer = ByteLevelBPETokenizer()
+    tokenizer = Tokenizer()  # <-- PERUBAHAN
     if 'vocab' in checkpoint and checkpoint['vocab']:
         vocab = {k: v for k, v in checkpoint['vocab'].items()}
         inv_vocab = {int(k): v for k, v in checkpoint['inv_vocab'].items()}
@@ -46,7 +46,6 @@ def load_checkpoint(path: str):
         tokenizer.set_inv_vocab(inv_vocab)
         tokenizer.set_merge_order(merge_order)
     
-    # Restore config
     config = checkpoint.get('config', {})
     vocab_size = config.get('vocab_size', len(tokenizer.get_vocab()))
     d_model = config.get('d_model', 4)
@@ -56,7 +55,6 @@ def load_checkpoint(path: str):
     max_len = config.get('max_len', 32)
     dropout = config.get('dropout', 0.1)
     
-    # Create model
     model = MiniGPT(
         vocab_size=vocab_size,
         d_model=d_model,
@@ -67,7 +65,6 @@ def load_checkpoint(path: str):
         dropout=dropout
     )
     
-    # Restore model parameters
     if 'params' in checkpoint and checkpoint['params']:
         params = model.parameters()
         for i, p in enumerate(params):
@@ -79,38 +76,28 @@ def load_checkpoint(path: str):
     return model, None, None, tokenizer, config, None
 
 # ============================================================
-# FUNGSI GENERATE DENGAN ADVANCED GENERATOR
+# GENERATE FUNCTION
 # ============================================================
 def generate_with_config(model, tokenizer, prompt: str, 
                          max_tokens: int = MAX_NEW_TOKENS,
                          temperature: float = TEMPERATURE,
                          top_k: int = TOP_K,
                          top_p: float = TOP_P) -> str:
-    """Generate text using AdvancedGenerator dengan parameter lengkap"""
     try:
-        # Buat AdvancedGenerator
         generator = AdvancedGenerator(model, tokenizer)
-        
-        # Set konfigurasi
         config = GenerationConfig()
         config.max_length = max_tokens
         config.temperature = temperature
         config.top_k = top_k
         config.top_p = top_p
-        config.num_beams = 1  # Greedy atau sampling
+        config.num_beams = 1
         config.use_cache = True
-        
         generator.set_config(config)
-        
-        # Generate
         results = generator.generate(prompt)
-        
         if results and len(results) > 0:
             return results[0]
         return ""
-        
     except Exception as e:
-        # Fallback ke generate biasa
         print(f"⚠️  Advanced generate error: {e}, fallback ke basic generate")
         result = generate(model, tokenizer, prompt, max_tokens)
         if isinstance(result, list):
@@ -118,32 +105,24 @@ def generate_with_config(model, tokenizer, prompt: str,
         return str(result)
 
 # ============================================================
-# FUNGSI UTILITY
+# UTILITY FUNCTIONS
 # ============================================================
 def sanitize_text(text: str) -> str:
-    """Replace invalid characters with '�'"""
     return text.encode('utf-8', errors='replace').decode('utf-8')
 
 def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
-    """Generate with fallback jika error"""
     for attempt in range(retries + 1):
         try:
-            # Gunakan temperature 0 untuk greedy jika attempt terakhir
             temp = 0.0 if attempt == retries else TEMPERATURE
-            
             response = generate_with_config(
-                model, 
-                tokenizer, 
-                prompt,
+                model, tokenizer, prompt,
                 max_tokens=MAX_NEW_TOKENS,
                 temperature=temp,
                 top_k=TOP_K if temp > 0 else 0,
                 top_p=TOP_P if temp > 0 else 1.0
             )
-            
             sanitize_text(response)
             return response
-            
         except UnicodeDecodeError:
             if attempt == retries:
                 raise
@@ -153,16 +132,14 @@ def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
                 print(f"❌ Error generating: {e}")
                 return ""
             continue
-    
     return ""
 
 # ============================================================
-# FUNGSI CHAT
+# CHAT FUNCTION
 # ============================================================
 def chat(model, tokenizer):
-    """Main chat loop dengan AdvancedGenerator"""
     print("\n" + "="*60)
-    print("🤖 MiniGPT Chatbot (Dengan Temperature & Top-K/Top-P)")
+    print("🤖 MiniGPT Chatbot")
     print("="*60)
     print(f"  Vocab size    : {len(tokenizer.get_vocab())}")
     print(f"  Temperature   : {TEMPERATURE}")
@@ -185,7 +162,6 @@ def chat(model, tokenizer):
             print("👋 Sampai jumpa!")
             break
         
-        # Format prompt dengan history
         prompt_parts = []
         start_idx = max(0, len(history) - MAX_CONTEXT_TURNS * 2)
         for msg in history[start_idx:]:
@@ -193,7 +169,6 @@ def chat(model, tokenizer):
         prompt_parts.append(f"Pengguna: {user_input}\nAI:")
         prompt = "\n".join(prompt_parts)
         
-        # Generate response
         try:
             print("🤔 Berpikir...", end="", flush=True)
             response = safe_generate(model, tokenizer, prompt)
@@ -205,7 +180,6 @@ def chat(model, tokenizer):
             print(f"\r❌ Error: {e}")
             continue
         
-        # Clean response
         if "AI:" in response:
             response = response.split("AI:")[-1].strip()
         for cut in ["<bos>", "<eos>"]:
@@ -227,38 +201,8 @@ def chat(model, tokenizer):
             display = "(Maaf, saya tidak bisa menjawab dengan baik. Coba pertanyaan lain.)"
         
         print(f"AI: {display}")
-        
         history.append(f"Pengguna: {user_input}")
         history.append(f"AI: {response}")
-
-# ============================================================
-# TEST GENERATE
-# ============================================================
-def test_generate(model, tokenizer):
-    """Test generation dengan berbagai parameter"""
-    prompts = ["Halo", "Apa kabar", "Saya suka"]
-    
-    print("\n" + "="*60)
-    print("🧪 TEST GENERATE (Dengan Temperature & Top-K/Top-P)")
-    print("="*60)
-    
-    # Test dengan berbagai temperature
-    for temp in [0.0, 0.5, 1.0]:
-        print(f"\n🔥 Temperature = {temp}")
-        for i, p in enumerate(prompts, 1):
-            try:
-                result = generate_with_config(
-                    model, tokenizer, p,
-                    max_tokens=20,
-                    temperature=temp,
-                    top_k=TOP_K if temp > 0 else 0,
-                    top_p=TOP_P if temp > 0 else 1.0
-                )
-                print(f"  [{i}] Prompt: {p}")
-                print(f"      Hasil: {sanitize_text(result)}")
-            except Exception as e:
-                print(f"      ❌ Error: {e}")
-        print()
 
 # ============================================================
 # MAIN
@@ -286,7 +230,18 @@ def main():
         if config:
             print(f"   Config: {config}")
         
-        test_generate(model, tokenizer)
+        # Test generate
+        print("\n🧪 Test generate:")
+        test_prompts = ["Halo", "Apa kabar"]
+        for p in test_prompts:
+            try:
+                result = generate(model, tokenizer, p, max_tokens=20)
+                if isinstance(result, list):
+                    result = result[0] if result else ""
+                print(f"  Prompt: {p} → {sanitize_text(result)}")
+            except Exception as e:
+                print(f"  ❌ Error: {e}")
+        
         chat(model, tokenizer)
         
     except Exception as e:
