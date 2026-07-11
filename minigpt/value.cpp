@@ -1,67 +1,57 @@
+// value.cpp
 #include "value.h"
-#include <algorithm>
+#include "backward.h"
 #include <cmath>
-#include <functional>
 #include <sstream>
-#include <unordered_set>
 
-Value::Value(double data, std::vector<std::shared_ptr<Value>> children, std::string op)
-    : data(data), grad(0.0), _backward([] {}), _prev(std::move(children)), _op(std::move(op)) {}
+Value::Value(double data, std::vector<Value::Ptr> children, std::string op)
+    : data(data), grad(0.0), _prev(children), _op(op) {}
 
-std::shared_ptr<Value> Value::create(double data) {
+Value::Ptr Value::create(double data) {
     return std::make_shared<Value>(data);
 }
 
 void Value::backward() {
-    std::vector<std::shared_ptr<Value>> topo;
-    std::unordered_set<Value*> visited;
-
-    std::function<void(std::shared_ptr<Value>)> build_topo =
-        [&](std::shared_ptr<Value> v) {
-            if (visited.find(v.get()) != visited.end())
-                return;
-
-            visited.insert(v.get());
-
-            for (const auto& child : v->_prev)
+    std::vector<Value::Ptr> topo;
+    std::vector<Value::Ptr> visited;
+    
+    std::function<void(Value::Ptr)> build_topo = [&](Value::Ptr v) {
+        if (std::find(visited.begin(), visited.end(), v) == visited.end()) {
+            visited.push_back(v);
+            for (auto& child : v->_prev) {
                 build_topo(child);
-
+            }
             topo.push_back(v);
-        };
-
+        }
+    };
     build_topo(shared_from_this());
-
-    // Reset seluruh grad sebelum backward
-    for (const auto& v : topo)
-        v->grad = 0.0;
-
-    grad = 1.0;
-
-    for (auto it = topo.rbegin(); it != topo.rend(); ++it)
-        (*it)->_backward();
+    
+    this->grad = 1.0;
+    for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
+        if ((*it)->_backward) {
+            (*it)->_backward();
+        }
+    }
 }
 
 std::string Value::repr() const {
-    std::ostringstream oss;
-    oss << "Value(data=" << data << ", grad=" << grad << ")";
-    return oss.str();
+    std::stringstream ss;
+    ss << "Value(data=" << data << ", grad=" << grad;
+    if (!_op.empty()) {
+        ss << ", op=" << _op;
+    }
+    ss << ")";
+    return ss.str();
 }
 
-// --------------------
-// Operator +
-// --------------------
-
+// Operator implementations
 ValuePtr operator+(const ValuePtr& a, const ValuePtr& b) {
-    auto out = Value::create(a->data + b->data);
-
-    out->_prev = {a, b};
-    out->_op = "+";
-
-    out->_backward = [a, b, out]() {
-        a->grad += out->grad;
-        b->grad += out->grad;
+    auto out = std::make_shared<Value>(a->data + b->data, 
+                                        std::vector<ValuePtr>{a, b}, 
+                                        "+");
+    out->_backward = [out, a, b]() {
+        autograd::backward::add(out.get(), a, b);
     };
-
     return out;
 }
 
@@ -73,21 +63,31 @@ ValuePtr operator+(double a, const ValuePtr& b) {
     return Value::create(a) + b;
 }
 
-// --------------------
-// Operator *
-// --------------------
+ValuePtr operator-(const ValuePtr& a, const ValuePtr& b) {
+    auto out = std::make_shared<Value>(a->data - b->data, 
+                                        std::vector<ValuePtr>{a, b}, 
+                                        "-");
+    out->_backward = [out, a, b]() {
+        autograd::backward::sub(out.get(), a, b);
+    };
+    return out;
+}
+
+ValuePtr operator-(const ValuePtr& a, double b) {
+    return a - Value::create(b);
+}
+
+ValuePtr operator-(double a, const ValuePtr& b) {
+    return Value::create(a) - b;
+}
 
 ValuePtr operator*(const ValuePtr& a, const ValuePtr& b) {
-    auto out = Value::create(a->data * b->data);
-
-    out->_prev = {a, b};
-    out->_op = "*";
-
-    out->_backward = [a, b, out]() {
-        a->grad += b->data * out->grad;
-        b->grad += a->data * out->grad;
+    auto out = std::make_shared<Value>(a->data * b->data, 
+                                        std::vector<ValuePtr>{a, b}, 
+                                        "*");
+    out->_backward = [out, a, b]() {
+        autograd::backward::mul(out.get(), a, b);
     };
-
     return out;
 }
 
@@ -99,37 +99,13 @@ ValuePtr operator*(double a, const ValuePtr& b) {
     return Value::create(a) * b;
 }
 
-// --------------------
-// Operator -
-// --------------------
-
-ValuePtr operator-(const ValuePtr& a, const ValuePtr& b) {
-    return a + (-1.0 * b);
-}
-
-ValuePtr operator-(const ValuePtr& a, double b) {
-    return a - Value::create(b);
-}
-
-ValuePtr operator-(double a, const ValuePtr& b) {
-    return Value::create(a) - b;
-}
-
-// --------------------
-// Operator /
-// --------------------
-
 ValuePtr operator/(const ValuePtr& a, const ValuePtr& b) {
-    auto out = Value::create(a->data / b->data);
-
-    out->_prev = {a, b};
-    out->_op = "/";
-
-    out->_backward = [a, b, out]() {
-        a->grad += (1.0 / b->data) * out->grad;
-        b->grad += (-a->data / (b->data * b->data)) * out->grad;
+    auto out = std::make_shared<Value>(a->data / b->data, 
+                                        std::vector<ValuePtr>{a, b}, 
+                                        "/");
+    out->_backward = [out, a, b]() {
+        autograd::backward::div(out.get(), a, b);
     };
-
     return out;
 }
 
@@ -141,101 +117,79 @@ ValuePtr operator/(double a, const ValuePtr& b) {
     return Value::create(a) / b;
 }
 
-// --------------------
-// Math Functions
-// --------------------
-
 ValuePtr pow(const ValuePtr& a, double exponent) {
-    auto out = Value::create(std::pow(a->data, exponent));
-
-    out->_prev = {a};
-    out->_op = "pow";
-
-    out->_backward = [a, exponent, out]() {
+    auto out = std::make_shared<Value>(std::pow(a->data, exponent), 
+                                        std::vector<ValuePtr>{a}, 
+                                        "pow");
+    out->_backward = [out, a, exponent]() {
         a->grad += exponent * std::pow(a->data, exponent - 1.0) * out->grad;
     };
-
     return out;
 }
 
 ValuePtr exp(const ValuePtr& a) {
-    double x = std::clamp(a->data, -60.0, 60.0);
-
-    auto out = Value::create(std::exp(x));
-
-    out->_prev = {a};
-    out->_op = "exp";
-
-    out->_backward = [a, out]() {
+    auto out = std::make_shared<Value>(std::exp(a->data), 
+                                        std::vector<ValuePtr>{a}, 
+                                        "exp");
+    out->_backward = [out, a]() {
         a->grad += out->data * out->grad;
     };
-
     return out;
 }
 
 ValuePtr log(const ValuePtr& a) {
-    double x = std::max(a->data, 1e-12);
-
-    auto out = Value::create(std::log(x));
-
-    out->_prev = {a};
-    out->_op = "log";
-
-    out->_backward = [a, x, out]() {
-        a->grad += (1.0 / x) * out->grad;
+    auto out = std::make_shared<Value>(std::log(a->data), 
+                                        std::vector<ValuePtr>{a}, 
+                                        "log");
+    out->_backward = [out, a]() {
+        a->grad += (1.0 / a->data) * out->grad;
     };
-
     return out;
 }
 
 ValuePtr sqrt(const ValuePtr& a) {
-    double x = std::max(a->data, 1e-12);
-    double r = std::sqrt(x);
-
-    auto out = Value::create(r);
-
-    out->_prev = {a};
-    out->_op = "sqrt";
-
-    out->_backward = [a, r, out]() {
-        a->grad += (0.5 / r) * out->grad;
+    auto out = std::make_shared<Value>(std::sqrt(a->data), 
+                                        std::vector<ValuePtr>{a}, 
+                                        "sqrt");
+    out->_backward = [out, a]() {
+        a->grad += (0.5 / out->data) * out->grad;
     };
-
     return out;
 }
 
 ValuePtr tanh(const ValuePtr& a) {
-    double t = std::tanh(a->data);
-
-    auto out = Value::create(t);
-
-    out->_prev = {a};
-    out->_op = "tanh";
-
-    out->_backward = [a, t, out]() {
-        a->grad += (1.0 - t * t) * out->grad;
+    auto out = std::make_shared<Value>(std::tanh(a->data), 
+                                        std::vector<ValuePtr>{a}, 
+                                        "tanh");
+    out->_backward = [out, a]() {
+        autograd::backward::tanh(out.get(), a);
     };
-
     return out;
 }
 
 ValuePtr relu(const ValuePtr& a) {
-    auto out = Value::create(a->data > 0.0 ? a->data : 0.0);
-
-    out->_prev = {a};
-    out->_op = "relu";
-
-    out->_backward = [a, out]() {
-        if (a->data > 0.0)
-            a->grad += out->grad;
+    auto out = std::make_shared<Value>(a->data > 0 ? a->data : 0.0, 
+                                        std::vector<ValuePtr>{a}, 
+                                        "relu");
+    out->_backward = [out, a]() {
+        autograd::backward::relu(out.get(), a);
     };
-
     return out;
 }
 
 ValuePtr gelu(const ValuePtr& a) {
-    constexpr double c = 0.7978845608028654; // sqrt(2/pi)
-
-    auto inner = (a + pow(a, 3.0) * 0.044715) * c;
-    return (a * (tanh(inner) + 1.0)) * 0.5;
+    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    double x = a->data;
+    double c = std::sqrt(2.0 / M_PI);
+    double x3 = x * x * x;
+    double tanh_arg = c * (x + 0.044715 * x3);
+    double gelu_val = 0.5 * x * (1.0 + std::tanh(tanh_arg));
+    
+    auto out = std::make_shared<Value>(gelu_val, 
+                                        std::vector<ValuePtr>{a}, 
+                                        "gelu");
+    out->_backward = [out, a]() {
+        autograd::backward::gelu(out.get(), a);
+    };
+    return out;
 }
