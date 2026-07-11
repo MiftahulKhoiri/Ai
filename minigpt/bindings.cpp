@@ -1,109 +1,111 @@
-// bindings.cpp
+// bindings.cpp - Tambahan binding untuk fitur baru
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <pybind11/numpy.h>
-#include "model.h"
-#include "tokenizer.h"
-#include "optim.h"
-#include "generation.h"
+#include <pybind11/functional.h>
+#include "config.h"
+#include "dataloader.h"
+#include "sampling.h"
+#include "metrics.h"
+#include "checkpoint.h"
+#include "generation_advanced.h"
+#include "visualization.h"
+#include "test.h"
+#include "server.h"
+#include "quantization.h"
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(minigpt, m) {
-    m.doc() = "MiniGPT - Lightweight GPT implementation with autograd";
+// Tambahkan di PYBIND11_MODULE:
 
-    // ===== BINDING UNTUK VALUE =====
-    py::class_<Value, std::shared_ptr<Value>>(m, "Value")
-        .def(py::init<double>())
-        .def_readwrite("data", &Value::data)
-        .def_readwrite("grad", &Value::grad)
-        .def("backward", &Value::backward)
-        .def("__repr__", &Value::repr)
-        .def("__add__", [](const Value::Ptr& a, const Value::Ptr& b) { return a + b; })
-        .def("__sub__", [](const Value::Ptr& a, const Value::Ptr& b) { return a - b; })
-        .def("__mul__", [](const Value::Ptr& a, const Value::Ptr& b) { return a * b; })
-        .def("__truediv__", [](const Value::Ptr& a, const Value::Ptr& b) { return a / b; });
+// Config
+py::class_<ModelConfig>(m, "ModelConfig")
+    .def(py::init<>())
+    .def_readwrite("vocab_size", &ModelConfig::vocab_size)
+    .def_readwrite("d_model", &ModelConfig::d_model)
+    .def_readwrite("n_heads", &ModelConfig::n_heads)
+    .def_readwrite("n_layers", &ModelConfig::n_layers)
+    .def_readwrite("d_ff", &ModelConfig::d_ff)
+    .def_readwrite("max_len", &ModelConfig::max_len)
+    .def_readwrite("dropout", &ModelConfig::dropout)
+    .def_readwrite("learning_rate", &ModelConfig::learning_rate)
+    .def_readwrite("batch_size", &ModelConfig::batch_size)
+    .def_readwrite("epochs", &ModelConfig::epochs)
+    .def_readwrite("temperature", &ModelConfig::temperature)
+    .def_readwrite("top_k", &ModelConfig::top_k)
+    .def_readwrite("top_p", &ModelConfig::top_p)
+    .def_static("from_json", &ModelConfig::from_json)
+    .def("to_json", &ModelConfig::to_json);
 
-    // ===== BINDING UNTUK TOKENIZER =====
-    py::class_<ByteLevelBPETokenizer>(m, "Tokenizer")
-        .def(py::init<>())
-        .def("train", &ByteLevelBPETokenizer::train)
-        .def("encode", &ByteLevelBPETokenizer::encode, 
-             py::arg("text"), py::arg("add_bos") = false, py::arg("add_eos") = false)
-        .def("decode", &ByteLevelBPETokenizer::decode)
-        .def("save", &ByteLevelBPETokenizer::save)
-        .def("load", &ByteLevelBPETokenizer::load)
-        .def("vocab_size", &ByteLevelBPETokenizer::vocab_size)
-        .def("get_vocab", &ByteLevelBPETokenizer::get_vocab)
-        .def("get_inv_vocab", &ByteLevelBPETokenizer::get_inv_vocab)
-        .def("get_merge_order", &ByteLevelBPETokenizer::get_merge_order);
+// DataLoader
+py::class_<DataLoader>(m, "DataLoader")
+    .def(py::init<ByteLevelBPETokenizer&, int, int>())
+    .def("load_text", &DataLoader::load_text)
+    .def("load_texts", &DataLoader::load_texts)
+    .def("next_batch", &DataLoader::next_batch)
+    .def("shuffle", &DataLoader::shuffle)
+    .def("num_batches", &DataLoader::num_batches)
+    .def("reset", &DataLoader::reset)
+    .def("size", &DataLoader::size);
 
-    // ===== BINDING UNTUK MINIGPT MODEL =====
-    py::class_<MiniGPT>(m, "MiniGPT")
-        .def(py::init<int, int, int, int, int, int, double>(),
-             py::arg("vocab_size"),
-             py::arg("d_model") = 16,
-             py::arg("n_heads") = 2,
-             py::arg("n_layers") = 2,
-             py::arg("d_ff") = 32,
-             py::arg("max_len") = 64,
-             py::arg("dropout") = 0.1)
-        .def("forward", &MiniGPT::forward)
-        .def("forward_incremental", &MiniGPT::forward_incremental)
-        .def("init_cache", &MiniGPT::init_cache)
-        .def("parameters", &MiniGPT::parameters)
-        .def("set_training", &MiniGPT::set_training)
-        .def_readonly("d_model", &MiniGPT::d_model)
-        .def_readonly("max_len", &MiniGPT::max_len)
-        .def_readonly("vocab_size", &MiniGPT::vocab_size);
+// Sampling functions
+m.def("greedy_sample", &sampling::greedy_sample);
+m.def("top_k_sample", &sampling::top_k_sample);
+m.def("top_p_sample", &sampling::top_p_sample);
+m.def("batch_sample", &sampling::batch_sample);
 
-    // ===== BINDING UNTUK OPTIMIZER =====
-    py::class_<AdamW>(m, "AdamW")
-        .def(py::init<std::vector<Value::Ptr>, double, double, double, double, double, bool>(),
-             py::arg("params"),
-             py::arg("lr") = 1e-3,
-             py::arg("betas1") = 0.9,
-             py::arg("betas2") = 0.999,
-             py::arg("eps") = 1e-8,
-             py::arg("weight_decay") = 0.01,
-             py::arg("decoupled_wd") = true)
-        .def("step", &AdamW::step)
-        .def("zero_grad", &AdamW::zero_grad)
-        .def_readwrite("lr", &AdamW::lr);
+// Metrics
+m.def("perplexity", &metrics::perplexity);
+m.def("accuracy", &metrics::accuracy);
+m.def("bleu_score", &metrics::bleu_score);
 
-    py::class_<WarmupCosineScheduler>(m, "WarmupCosineScheduler")
-        .def(py::init<AdamW*, int, int, double, double>(),
-             py::arg("opt"),
-             py::arg("warmup_steps"),
-             py::arg("total_steps"),
-             py::arg("base_lr") = 1e-3,
-             py::arg("min_lr") = 1e-5)
-        .def("step", &WarmupCosineScheduler::step);
+// TrainingLogger
+py::class_<metrics::TrainingLogger>(m, "TrainingLogger")
+    .def(py::init<const std::string&>())
+    .def("log_epoch", &metrics::TrainingLogger::log_epoch)
+    .def("log_metric", &metrics::TrainingLogger::log_metric)
+    .def("save_logs", &metrics::TrainingLogger::save_logs)
+    .def("print_summary", &metrics::TrainingLogger::print_summary)
+    .def("get_losses", &metrics::TrainingLogger::get_losses)
+    .def("get_accuracies", &metrics::TrainingLogger::get_accuracies)
+    .def("get_lrs", &metrics::TrainingLogger::get_lrs);
 
-    // ===== BINDING UNTUK LOSS FUNCTIONS =====
-    m.def("cross_entropy_loss", &cross_entropy_loss,
-          py::arg("logits_seq"), py::arg("target_ids"), py::arg("pad_mask") = std::vector<int>{});
+// ProgressBar
+py::class_<metrics::ProgressBar>(m, "ProgressBar")
+    .def(py::init<int, const std::string&>())
+    .def("update", &metrics::ProgressBar::update)
+    .def("increment", &metrics::ProgressBar::increment)
+    .def("finish", &metrics::ProgressBar::finish);
 
-    m.def("clip_grad_norm", &clip_grad_norm,
-          py::arg("params"), py::arg("max_norm"));
+// CheckpointManager
+py::class_<CheckpointManager>(m, "CheckpointManager")
+    .def(py::init<const std::string&>())
+    .def("save", &CheckpointManager::save)
+    .def("load", &CheckpointManager::load)
+    .def("set_auto_save", &CheckpointManager::set_auto_save)
+    .def("set_max_keep", &CheckpointManager::set_max_keep)
+    .def("get_latest_checkpoint", &CheckpointManager::get_latest_checkpoint)
+    .def("list_checkpoints", &CheckpointManager::list_checkpoints)
+    .def("clean_old_checkpoints", &CheckpointManager::clean_old_checkpoints);
 
-    // ===== BINDING UNTUK GENERATION FUNCTIONS =====
-    // Argmax function
-    m.def("argmax", &argmax, py::arg("logits"),
-          "Get the index of the maximum value in logits");
-    
-    // Sample from logits with top-k and temperature
-    m.def("sample_top_k", &sample_top_k, 
-          py::arg("logits"), py::arg("k") = 0, py::arg("temperature") = 1.0f,
-          "Sample from logits with top-k filtering and temperature");
+// AdvancedGeneration
+py::class_<advanced_generation::AdvancedGenerator>(m, "AdvancedGenerator")
+    .def(py::init<MiniGPT&, ByteLevelBPETokenizer&>())
+    .def("set_config", &advanced_generation::AdvancedGenerator::set_config)
+    .def("get_config", &advanced_generation::AdvancedGenerator::get_config)
+    .def("generate", &advanced_generation::AdvancedGenerator::generate);
 
-    // Generate function - PERBAIKI JUMLAH ARGUMEN!
-    m.def("generate", &generate,
-          py::arg("model"),
-          py::arg("tokenizer"),
-          py::arg("prompt"),
-          py::arg("max_tokens") = 50,
-          py::arg("add_bos") = false,
-          py::arg("add_eos") = false,
-          "Generate text from a prompt");
-}
+// Visualization
+m.def("graph_to_dot", &visualization::graph_to_dot);
+m.def("plot_attention", &visualization::plot_attention);
+m.def("save_embeddings", &visualization::save_embeddings);
+
+// Quantization
+m.def("quantize_float_to_int8", &quantization::quantize_float_to_int8);
+m.def("dequantize_int8_to_float", &quantization::dequantize_int8_to_float);
+m.def("prune_weights", &quantization::prune_weights);
+m.def("compress_model", &quantization::compress_model);
+m.def("distill", &quantization::distill);
+
+// Test runner
+m.def("run_all_tests", &run_all_tests);
