@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <array>
 #include <utility>
+#include <algorithm>  // TAMBAHKAN INI!
 #include <cstdint>   // TAMBAHKAN
 
 struct pair_hash {
