@@ -1,3 +1,4 @@
+// optim.h
 #ifndef OPTIM_H
 #define OPTIM_H
 
@@ -12,6 +13,9 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
 
 // Log softmax untuk stabilitas numerik yang lebih baik
 std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x);
+
+// Softmax
+std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x);
 
 class AdamW {
 public:
@@ -39,7 +43,7 @@ public:
 private:
     std::vector<ValuePtr> params;
     double b1, b2, eps, wd;
-    bool decoupled_wd;  // Gunakan decoupled weight decay (AdamW paper)
+    bool decoupled_wd;
     std::vector<double> m, v;
     int t;
 };
@@ -63,7 +67,7 @@ private:
     double base_lr, min_lr;
 
     // Konstanta untuk perhitungan cosine
-    static constexpr double PI = 3.14159265358979323846;
+    static constexpr double M_PI = 3.14159265358979323846;
 };
 
 #endif // OPTIM_H
