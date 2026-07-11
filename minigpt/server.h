@@ -7,7 +7,7 @@
 #include <map>
 #include <functional>
 #include <thread>
-#include <iostream>  // TAMBAHKAN INI!
+#include <iostream>
 
 class HTTPServer {
 public:
@@ -34,8 +34,6 @@ public:
     
 private:
     void run() {
-        // Simplified - in production, use actual HTTP library
-        // This is just a placeholder
         while (running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -50,7 +48,13 @@ private:
 class GPTAPIServer {
 public:
     GPTAPIServer(MiniGPT& model, ByteLevelBPETokenizer& tokenizer, int port = 8080)
-        : model(model), tokenizer(tokenizer), server(port), generator(model, tokenizer) {
+        : m_model(model), 
+          m_tokenizer(tokenizer), 
+          server(port), 
+          generator(model, tokenizer) {
+        // Suppress unused parameter warnings
+        (void)m_model;
+        (void)m_tokenizer;
         setup_routes();
     }
     
@@ -92,7 +96,7 @@ private:
             return response;
         });
         
-        // Status endpoint - PERBAIKI: hapus capture this yang tidak digunakan
+        // Status endpoint
         server.add_route("/status", "GET", [](const std::map<std::string, std::string>&) {
             return std::string("{\"status\":\"running\",\"model\":\"MiniGPT\"}");
         });
@@ -120,8 +124,9 @@ private:
         return escaped;
     }
     
-    MiniGPT& model;
-    ByteLevelBPETokenizer& tokenizer;
+    // Ganti nama jadi m_ prefix (opsional, untuk menunjukkan member)
+    MiniGPT& m_model;
+    ByteLevelBPETokenizer& m_tokenizer;
     HTTPServer server;
     advanced_generation::AdvancedGenerator generator;
 };
