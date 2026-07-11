@@ -11,12 +11,12 @@
 // ============================================================
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
-    
+
     double max_val = x[0]->data;
     for (const auto& v : x) {
         if (v->data > max_val) max_val = v->data;
     }
-    
+
     std::vector<ValuePtr> exps;
     exps.reserve(x.size());
     double sum = 0.0;
@@ -26,16 +26,15 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
         exps.push_back(exp_v);
         sum += exp_val;
     }
-    
+
     std::vector<ValuePtr> result;
     result.reserve(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         auto prob = exps[i] / Value::create(sum);
         result.push_back(prob);
     }
-    
+
     // Backward untuk softmax
-    // JANGAN menimpa _prev! Biarkan _prev dari operasi '/'
     for (size_t i = 0; i < x.size(); ++i) {
         result[i]->_backward = [result, x, i]() {
             double grad = result[i]->grad;
@@ -46,9 +45,12 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * p_i * (delta - p_j);
             }
         };
-        // HAPUS baris ini: result[i]->_prev = {x[i]};
+
+        // FIX: _prev harus menunjuk ke seluruh x, bukan dibiarkan dari
+        // operator '/' (yang menunjuk ke node exps[i]/sum, terputus dari x).
+        result[i]->_prev = x;
     }
-    
+
     return result;
 }
 
@@ -57,25 +59,25 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
 // ============================================================
 std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
-    
+
     double max_val = x[0]->data;
     for (size_t i = 1; i < x.size(); ++i) {
         if (x[i]->data > max_val) max_val = x[i]->data;
     }
-    
+
     double sum = 0.0;
     for (size_t i = 0; i < x.size(); ++i) {
         sum += std::exp(x[i]->data - max_val);
     }
-    
+
     double log_sum = std::log(sum);
     std::vector<ValuePtr> result;
     result.reserve(x.size());
-    
+
     for (size_t i = 0; i < x.size(); ++i) {
         double log_val = x[i]->data - max_val - log_sum;
         auto v = Value::create(log_val);
-        
+
         v->_backward = [v, x, i, max_val, sum]() {
             double grad = v->grad;
             for (size_t j = 0; j < x.size(); ++j) {
@@ -84,12 +86,15 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * (delta - softmax_j);
             }
         };
-        // HAPUS baris ini: v->_prev = {x[i]};
-        // Biarkan _prev dari operasi '-' dan '-' (x[i] - max_val - log_sum)
-        
+
+        // FIX: _prev harus eksplisit menunjuk ke seluruh x, karena v
+        // dibuat sebagai leaf baru via Value::create() dan tidak
+        // otomatis terhubung ke x.
+        v->_prev = std::vector<ValuePtr>(x.begin(), x.end());
+
         result.push_back(v);
     }
-    
+
     return result;
 }
 
@@ -99,22 +104,22 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
 ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
                             const std::vector<int>& target_ids,
                             const std::vector<int>& pad_mask) {
-    
+
     if (logits_seq.empty() || target_ids.empty()) {
         return Value::create(0.0);
     }
-    
+
     std::vector<ValuePtr> losses;
     size_t seq_len = std::min(logits_seq.size(), target_ids.size());
-    
+
     for (size_t pos = 0; pos < seq_len; ++pos) {
         if (pos < pad_mask.size() && pad_mask[pos] == 1) continue;
-        
+
         int target = target_ids[pos];
         if (target < 0 || target >= (int)logits_seq[pos].size()) continue;
-        
+
         auto log_probs = log_softmax(logits_seq[pos]);
-        
+
         if (target < (int)log_probs.size()) {
             auto neg_log = Value::create(-log_probs[target]->data);
             neg_log->_prev = {log_probs[target]};
@@ -125,17 +130,17 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
             losses.push_back(neg_log);
         }
     }
-    
+
     if (losses.empty()) {
         return Value::create(0.0);
     }
-    
+
     double sum = 0.0;
     for (const auto& loss : losses) {
         sum += loss->data;
     }
     double avg = sum / losses.size();
-    
+
     auto result = Value::create(avg);
     result->_prev = losses;
     result->_backward = [result, losses]() {
@@ -144,7 +149,7 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
             loss->grad += grad;
         }
     };
-    
+
     return result;
 }
 
@@ -174,23 +179,23 @@ void AdamW::step() {
     t++;
     double bias_correction1 = 1.0 - std::pow(b1, t);
     double bias_correction2 = 1.0 - std::pow(b2, t);
-    
+
     for (size_t i = 0; i < params.size(); ++i) {
         auto& p = params[i];
         double grad = p->grad;
-        
+
         m[i] = b1 * m[i] + (1.0 - b1) * grad;
         v[i] = b2 * v[i] + (1.0 - b2) * grad * grad;
-        
+
         double m_hat = m[i] / bias_correction1;
         double v_hat = v[i] / bias_correction2;
-        
+
         double update = lr * m_hat / (std::sqrt(v_hat) + eps);
-        
+
         if (decoupled_wd) {
             p->data -= lr * wd * p->data;
         }
-        
+
         p->data -= update;
     }
 }
@@ -204,7 +209,7 @@ double clip_grad_norm(std::vector<ValuePtr>& params, double max_norm) {
         total_norm += p->grad * p->grad;
     }
     total_norm = std::sqrt(total_norm);
-    
+
     if (total_norm > max_norm && max_norm > 0.0) {
         double scale = max_norm / total_norm;
         for (auto& p : params) {
@@ -226,7 +231,7 @@ WarmupCosineScheduler::WarmupCosineScheduler(AdamW* opt, int warmup_steps, int t
 double WarmupCosineScheduler::step() {
     step_num++;
     double lr;
-    
+
     if (step_num < warmup) {
         lr = base_lr * static_cast<double>(step_num) / warmup;
     } else {
@@ -235,7 +240,7 @@ double WarmupCosineScheduler::step() {
         double cosine = 0.5 * (1.0 + std::cos(PI * progress));
         lr = min_lr + (base_lr - min_lr) * cosine;
     }
-    
+
     opt->lr = lr;
     return lr;
 }
