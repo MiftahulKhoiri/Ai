@@ -9,13 +9,13 @@ from typing import List, Tuple, Optional
 
 from minigpt import (
     MiniGPT,
-    Tokenizer,  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
+    Tokenizer,
     generate,
     AdvancedGenerator,
     GenerationConfig,
     argmax,
     sample_top_k,
-    sample_top_p
+    # sample_top_p  # <-- HAPUS INI! Tidak tersedia
 )
 
 # ============================================================
@@ -37,7 +37,7 @@ def load_checkpoint(path: str):
         checkpoint = json.load(f)
     
     # Restore tokenizer
-    tokenizer = Tokenizer()  # <-- PERUBAHAN
+    tokenizer = Tokenizer()
     if 'vocab' in checkpoint and checkpoint['vocab']:
         vocab = {k: v for k, v in checkpoint['vocab'].items()}
         inv_vocab = {int(k): v for k, v in checkpoint['inv_vocab'].items()}
@@ -81,15 +81,15 @@ def load_checkpoint(path: str):
 def generate_with_config(model, tokenizer, prompt: str, 
                          max_tokens: int = MAX_NEW_TOKENS,
                          temperature: float = TEMPERATURE,
-                         top_k: int = TOP_K,
-                         top_p: float = TOP_P) -> str:
+                         top_k: int = TOP_K) -> str:
+    """Generate text dengan AdvancedGenerator"""
     try:
         generator = AdvancedGenerator(model, tokenizer)
         config = GenerationConfig()
         config.max_length = max_tokens
         config.temperature = temperature
         config.top_k = top_k
-        config.top_p = top_p
+        config.top_p = 0.9  # Default
         config.num_beams = 1
         config.use_cache = True
         generator.set_config(config)
@@ -108,9 +108,11 @@ def generate_with_config(model, tokenizer, prompt: str,
 # UTILITY FUNCTIONS
 # ============================================================
 def sanitize_text(text: str) -> str:
+    """Replace invalid characters with '�'"""
     return text.encode('utf-8', errors='replace').decode('utf-8')
 
 def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
+    """Generate with fallback jika error"""
     for attempt in range(retries + 1):
         try:
             temp = 0.0 if attempt == retries else TEMPERATURE
@@ -118,8 +120,7 @@ def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
                 model, tokenizer, prompt,
                 max_tokens=MAX_NEW_TOKENS,
                 temperature=temp,
-                top_k=TOP_K if temp > 0 else 0,
-                top_p=TOP_P if temp > 0 else 1.0
+                top_k=TOP_K if temp > 0 else 0
             )
             sanitize_text(response)
             return response
@@ -138,16 +139,16 @@ def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
 # CHAT FUNCTION
 # ============================================================
 def chat(model, tokenizer):
-    print("\n" + "="*60)
+    """Main chat loop"""
+    print("\n" + "="*50)
     print("🤖 MiniGPT Chatbot")
-    print("="*60)
+    print("="*50)
     print(f"  Vocab size    : {len(tokenizer.get_vocab())}")
     print(f"  Temperature   : {TEMPERATURE}")
     print(f"  Top-K         : {TOP_K}")
-    print(f"  Top-P         : {TOP_P}")
     print(f"  Max new tokens: {MAX_NEW_TOKENS}")
     print("\nKetik 'exit' atau 'keluar' untuk berhenti.")
-    print("-"*60)
+    print("-"*50)
     
     history = []
     
@@ -162,6 +163,7 @@ def chat(model, tokenizer):
             print("👋 Sampai jumpa!")
             break
         
+        # Format prompt dengan history
         prompt_parts = []
         start_idx = max(0, len(history) - MAX_CONTEXT_TURNS * 2)
         for msg in history[start_idx:]:
@@ -169,6 +171,7 @@ def chat(model, tokenizer):
         prompt_parts.append(f"Pengguna: {user_input}\nAI:")
         prompt = "\n".join(prompt_parts)
         
+        # Generate response
         try:
             print("🤔 Berpikir...", end="", flush=True)
             response = safe_generate(model, tokenizer, prompt)
@@ -180,6 +183,7 @@ def chat(model, tokenizer):
             print(f"\r❌ Error: {e}")
             continue
         
+        # Clean response
         if "AI:" in response:
             response = response.split("AI:")[-1].strip()
         for cut in ["<bos>", "<eos>"]:
@@ -205,6 +209,24 @@ def chat(model, tokenizer):
         history.append(f"AI: {response}")
 
 # ============================================================
+# TEST GENERATE
+# ============================================================
+def test_generate(model, tokenizer):
+    """Test generation with sample prompts"""
+    prompts = ["Halo", "Apa kabar", "Saya suka"]
+    print("\n" + "="*50 + "\n🧪 TES GENERATE\n" + "="*50)
+    for i, p in enumerate(prompts, 1):
+        try:
+            result = generate(model, tokenizer, p, max_tokens=20)
+            if isinstance(result, list):
+                result = result[0] if result else ""
+            print(f"  [{i}] Prompt: {p}")
+            print(f"      Hasil: {sanitize_text(result)[:80]}...")
+        except Exception as e:
+            print(f"  [{i}] ❌ Error: {e}")
+        print()
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
@@ -219,9 +241,9 @@ def main():
         print(f"❌ File checkpoint '{checkpoint_path}' tidak ditemukan.")
         return
     
-    print("="*60)
+    print("="*50)
     print("📦 MEMUAT MODEL")
-    print("="*60)
+    print("="*50)
     
     try:
         model, _, _, tokenizer, config, _ = load_checkpoint(checkpoint_path)
@@ -231,19 +253,15 @@ def main():
             print(f"   Config: {config}")
         
         # Test generate
-        print("\n🧪 Test generate:")
-        test_prompts = ["Halo", "Apa kabar"]
-        for p in test_prompts:
-            try:
-                result = generate(model, tokenizer, p, max_tokens=20)
-                if isinstance(result, list):
-                    result = result[0] if result else ""
-                print(f"  Prompt: {p} → {sanitize_text(result)}")
-            except Exception as e:
-                print(f"  ❌ Error: {e}")
+        test_generate(model, tokenizer)
         
+        # Start chat
         chat(model, tokenizer)
         
+    except json.JSONDecodeError as e:
+        print(f"❌ Error: File checkpoint corrupt: {e}")
+    except KeyError as e:
+        print(f"❌ Error: Missing key in checkpoint: {e}")
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
