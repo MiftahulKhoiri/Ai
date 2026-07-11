@@ -7,7 +7,7 @@
 #include <iostream>
 
 // ============================================================
-// SOFTMAX - HANYA SATU DEFINISI DI SINI
+// SOFTMAX
 // ============================================================
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
@@ -48,6 +48,8 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * p_i * (delta - p_j);
             }
         };
+        // === INI PENTING: hubungkan _prev agar backward berjalan ===
+        result[i]->_prev = {x[i]};
     }
     
     return result;
@@ -59,13 +61,11 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
 std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
     
-    // Cari max untuk stabilitas numerik
     double max_val = x[0]->data;
     for (size_t i = 1; i < x.size(); ++i) {
         if (x[i]->data > max_val) max_val = x[i]->data;
     }
     
-    // Hitung exp dan sum
     double sum = 0.0;
     for (size_t i = 0; i < x.size(); ++i) {
         sum += std::exp(x[i]->data - max_val);
@@ -79,7 +79,6 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
         double log_val = x[i]->data - max_val - log_sum;
         auto v = Value::create(log_val);
         
-        // Backward untuk log_softmax
         v->_backward = [v, x, i, max_val, sum]() {
             double grad = v->grad;
             for (size_t j = 0; j < x.size(); ++j) {
@@ -88,6 +87,8 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * (delta - softmax_j);
             }
         };
+        // === INI PENTING: hubungkan _prev agar backward berjalan ===
+        v->_prev = {x[i]};
         
         result.push_back(v);
     }
@@ -110,25 +111,22 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
     size_t seq_len = std::min(logits_seq.size(), target_ids.size());
     
     for (size_t pos = 0; pos < seq_len; ++pos) {
-        // Skip padding
         if (pos < pad_mask.size() && pad_mask[pos] == 1) continue;
         
         int target = target_ids[pos];
         if (target < 0 || target >= (int)logits_seq[pos].size()) continue;
         
-        // Log-softmax untuk stabilitas
         auto log_probs = log_softmax(logits_seq[pos]);
         
-        // Negative log likelihood: -log(p_target)
         if (target < (int)log_probs.size()) {
+            // Negative log likelihood: -log(p_target)
             auto neg_log = Value::create(-log_probs[target]->data);
-            
-            // Backward: d(-log(p_target))/d(logits)
+            // === INI PENTING: hubungkan _prev agar backward berjalan ===
+            neg_log->_prev = {log_probs[target]};
             neg_log->_backward = [neg_log, log_probs, target]() {
                 double grad = neg_log->grad;
                 log_probs[target]->grad += -grad;
             };
-            
             losses.push_back(neg_log);
         }
     }
@@ -145,6 +143,8 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
     double avg = sum / losses.size();
     
     auto result = Value::create(avg);
+    // === INI PENTING: hubungkan _prev ke semua losses ===
+    result->_prev = losses;
     result->_backward = [result, losses]() {
         double grad = result->grad / losses.size();
         for (auto& loss : losses) {
@@ -186,18 +186,14 @@ void AdamW::step() {
         auto& p = params[i];
         double grad = p->grad;
         
-        // Update momentum
         m[i] = b1 * m[i] + (1.0 - b1) * grad;
         v[i] = b2 * v[i] + (1.0 - b2) * grad * grad;
         
-        // Bias correction
         double m_hat = m[i] / bias_correction1;
         double v_hat = v[i] / bias_correction2;
         
-        // Update parameter
         double update = lr * m_hat / (std::sqrt(v_hat) + eps);
         
-        // Decoupled weight decay (AdamW)
         if (decoupled_wd) {
             p->data -= lr * wd * p->data;
         }
@@ -239,10 +235,8 @@ double WarmupCosineScheduler::step() {
     double lr;
     
     if (step_num < warmup) {
-        // Linear warmup
         lr = base_lr * static_cast<double>(step_num) / warmup;
     } else {
-        // Cosine decay
         double progress = static_cast<double>(step_num - warmup) / (total - warmup);
         progress = std::min(1.0, progress);
         double cosine = 0.5 * (1.0 + std::cos(PI * progress));
