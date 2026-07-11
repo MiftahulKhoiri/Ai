@@ -1,7 +1,7 @@
 // layers.h
 #pragma once
 #include "value.h"
-#include "utils.h"  // TAMBAHKAN INI
+#include "utils.h"
 #include <vector>
 #include <memory>
 
@@ -13,8 +13,6 @@ std::vector<ValuePtr> linear_forward(
     const std::vector<ValuePtr>& x,
     const std::vector<ValuePtr>& weight,
     const std::vector<ValuePtr>& bias);
-
-std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x);
 
 double random_normal(double mean, double stddev);
 
