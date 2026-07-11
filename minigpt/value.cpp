@@ -3,6 +3,7 @@
 #include "backward.h"
 #include <cmath>
 #include <sstream>
+#include <algorithm>  // TAMBAHKAN INI!
 
 Value::Value(double data, std::vector<Value::Ptr> children, std::string op)
     : data(data), grad(0.0), _prev(children), _op(op) {}
@@ -16,7 +17,9 @@ void Value::backward() {
     std::vector<Value::Ptr> visited;
     
     std::function<void(Value::Ptr)> build_topo = [&](Value::Ptr v) {
-        if (std::find(visited.begin(), visited.end(), v) == visited.end()) {
+        // Perbaiki: gunakan std::find dengan tipe yang eksplisit
+        auto it = std::find(visited.begin(), visited.end(), v);
+        if (it == visited.end()) {
             visited.push_back(v);
             for (auto& child : v->_prev) {
                 build_topo(child);
@@ -24,6 +27,7 @@ void Value::backward() {
             topo.push_back(v);
         }
     };
+    
     build_topo(shared_from_this());
     
     this->grad = 1.0;
@@ -178,7 +182,6 @@ ValuePtr relu(const ValuePtr& a) {
 }
 
 ValuePtr gelu(const ValuePtr& a) {
-    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
     double x = a->data;
     double c = std::sqrt(2.0 / M_PI);
     double x3 = x * x * x;
