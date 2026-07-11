@@ -1,5 +1,4 @@
-// bindings.cpp - Tambahkan py::arg() untuk semua fungsi
-
+// bindings.cpp
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
@@ -44,7 +43,7 @@ PYBIND11_MODULE(minigpt, m) {
     py::class_<ByteLevelBPETokenizer>(m, "Tokenizer")
         .def(py::init<>())
         .def("train", &ByteLevelBPETokenizer::train, 
-             py::arg("corpus"), py::arg("vocab_size"))  // <-- TAMBAHKAN INI!
+             py::arg("corpus"), py::arg("vocab_size"))
         .def("encode", &ByteLevelBPETokenizer::encode, 
              py::arg("text"), py::arg("add_bos") = false, py::arg("add_eos") = false)
         .def("decode", &ByteLevelBPETokenizer::decode, py::arg("ids"))
@@ -108,8 +107,10 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("d_ff") = 32,
              py::arg("max_len") = 64,
              py::arg("dropout") = 0.1)
-        .def("forward", &MiniGPT::forward, py::arg("token_ids"), py::arg("pad_mask") = std::vector<int>{})
-        .def("forward_incremental", &MiniGPT::forward_incremental, py::arg("token_id"), py::arg("pos"))
+        .def("forward", &MiniGPT::forward, 
+             py::arg("token_ids"), py::arg("pad_mask") = std::vector<int>{})
+        .def("forward_incremental", &MiniGPT::forward_incremental, 
+             py::arg("token_id"), py::arg("pos"))
         .def("init_cache", &MiniGPT::init_cache)
         .def("parameters", &MiniGPT::parameters)
         .def("set_training", &MiniGPT::set_training, py::arg("mode"))
