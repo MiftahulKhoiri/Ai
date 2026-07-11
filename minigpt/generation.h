@@ -5,8 +5,9 @@
 #include <string>
 #include <vector>
 
-void generate(MiniGPT& model, Tokenizer& tokenizer,
-              const std::string& prompt, int max_tokens = 50);
+void generate(MiniGPT& model, ByteLevelBPETokenizer& tokenizer,
+              const std::string& prompt, int max_tokens = 50, 
+              bool add_bos = false, bool add_eos = false);
 
 // Fungsi pembantu
 int argmax(const std::vector<Value::Ptr>& logits);
