@@ -5,6 +5,7 @@
 #include "value.h"
 #include <vector>
 #include <memory>
+#include <cmath>  // TAMBAHKAN INI
 
 // Forward declarations
 ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
@@ -66,8 +67,8 @@ private:
     int warmup, total, step_num;
     double base_lr, min_lr;
 
-    // Konstanta untuk perhitungan cosine
-    static constexpr double M_PI = 3.14159265358979323846;
+    // Gunakan nama yang berbeda agar tidak bentrok dengan M_PI dari cmath
+    static constexpr double PI = 3.14159265358979323846;
 };
 
 #endif // OPTIM_H
