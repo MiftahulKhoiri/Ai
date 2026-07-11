@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <functional>
+#include <cstdint>   // TAMBAHKAN
 #include "simd.h"
 
 namespace tnsr {
