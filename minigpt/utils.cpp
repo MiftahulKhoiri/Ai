@@ -7,7 +7,6 @@
 #endif
 
 ValuePtr gelu(const ValuePtr& x) {
-    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
     double val = x->data;
     double c = std::sqrt(2.0 / M_PI);
     double x3 = val * val * val;
