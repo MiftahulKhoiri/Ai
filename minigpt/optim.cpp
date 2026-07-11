@@ -7,7 +7,7 @@
 #include <iostream>
 
 // ============================================================
-// SOFTMAX
+// SOFTMAX - HANYA SATU DEFINISI DI SINI
 // ============================================================
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
