@@ -7,9 +7,7 @@
 #include <map>
 #include <functional>
 #include <thread>
-
-// Note: This is a simplified version without external HTTP library
-// For production, integrate with httplib or crow
+#include <iostream>  // TAMBAHKAN INI!
 
 class HTTPServer {
 public:
@@ -94,8 +92,8 @@ private:
             return response;
         });
         
-        // Status endpoint
-        server.add_route("/status", "GET", [this](const std::map<std::string, std::string>&) {
+        // Status endpoint - PERBAIKI: hapus capture this yang tidak digunakan
+        server.add_route("/status", "GET", [](const std::map<std::string, std::string>&) {
             return std::string("{\"status\":\"running\",\"model\":\"MiniGPT\"}");
         });
         
