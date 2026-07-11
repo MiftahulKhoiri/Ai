@@ -1,5 +1,6 @@
 // layers.cpp
 #include "layers.h"
+#include "utils.h"  // TAMBAHKAN INI untuk softmax
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -53,44 +54,6 @@ std::vector<ValuePtr> linear_forward(
         }
     }
     
-    return result;
-}
-
-// Softmax
-std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
-    if (x.empty()) return {};
-    
-    // Find max for numerical stability
-    double max_val = x[0]->data;
-    for (size_t i = 1; i < x.size(); ++i) {
-        if (x[i]->data > max_val) max_val = x[i]->data;
-    }
-    
-    // Compute exp and sum
-    std::vector<ValuePtr> exp_vals;
-    exp_vals.reserve(x.size());
-    double sum = 0.0;
-    for (size_t i = 0; i < x.size(); ++i) {
-        double val = std::exp(x[i]->data - max_val);
-        exp_vals.push_back(Value::create(val));
-        sum += val;
-    }
-    
-    // Normalize
-    std::vector<ValuePtr> result;
-    result.reserve(x.size());
-    for (size_t i = 0; i < x.size(); ++i) {
-        result.push_back(exp_vals[i] / Value::create(sum));
-        // Backward for softmax
-        result.back()->_backward = [result, x, i, exp_vals, sum]() {
-            double grad = result[i]->grad;
-            for (size_t j = 0; j < x.size(); ++j) {
-                double delta = (i == j) ? 1.0 : 0.0;
-                double softmax_j = exp_vals[j]->data / sum;
-                x[j]->grad += grad * (delta - softmax_j);
-            }
-        };
-    }
     return result;
 }
 
@@ -152,15 +115,13 @@ std::vector<ValuePtr> PositionalEmbedding::forward(int seq_len) {
         seq_len = max_len;
     }
     
-    // Return copy of positional encodings
     std::vector<ValuePtr> result;
     if (seq_len <= 0 || seq_len > (int)pos_encoding.size()) {
         return result;
     }
     
-    // Return first seq_len positions
+    // Return first seq_len positions as copies
     for (int i = 0; i < seq_len; ++i) {
-        // Create copies so they can be modified independently
         for (const auto& v : pos_encoding[i]) {
             result.push_back(v);
         }
@@ -180,7 +141,6 @@ std::vector<ValuePtr> Dropout::forward(const std::vector<ValuePtr>& x) {
     }
     
     if (p >= 1.0) {
-        // Return zeros
         std::vector<ValuePtr> result;
         result.reserve(x.size());
         for (size_t i = 0; i < x.size(); ++i) {
@@ -249,12 +209,12 @@ std::vector<ValuePtr> LayerNorm::forward(const std::vector<ValuePtr>& x) {
 // ============================================================
 
 MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double dropout, int max_len)
-    : d_model(d_model), n_heads(n_heads), dropout_p(dropout), max_len(max_len) {
+    : d_model(d_model), n_heads(n_heads), dropout_p(dropout), max_len(max_len),
+      attn_dropout(dropout) {
     
     if (d_model % n_heads != 0) {
         std::cerr << "[ERROR] MultiHeadSelfAttention: d_model " << d_model 
                   << " not divisible by n_heads " << n_heads << std::endl;
-        // Adjust n_heads to be divisible
         n_heads = 1;
         while (d_model % n_heads != 0) n_heads++;
     }
@@ -278,9 +238,6 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
         bias_v.push_back(Value::create(0.0));
         bias_o.push_back(Value::create(0.0));
     }
-    
-    // Initialize dropout
-    attn_dropout = Dropout(dropout);
 }
 
 std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
@@ -299,7 +256,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
     
     int d_k = d_model / n_heads;
     if (d_k == 0) {
-        std::cerr << "[ERROR] Attention: d_k=0, d_model=" << d_model << ", n_heads=" << n_heads << std::endl;
+        std::cerr << "[ERROR] Attention: d_k=0" << std::endl;
         return {};
     }
     
@@ -312,8 +269,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         v[i] = linear_forward(x[i], weight_v, bias_v);
     }
     
-    // Reshape for multi-head: [seq_len, n_heads, d_k]
-    // Q heads
+    // Reshape for multi-head
     std::vector<std::vector<std::vector<ValuePtr>>> q_heads(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         q_heads[i].resize(n_heads);
@@ -363,7 +319,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
     for (int i = 0; i < seq_len; ++i) {
         attn_outputs[i].resize(n_heads);
         for (int h = 0; h < n_heads; ++h) {
-            // Compute scores: Q * K^T / sqrt(d_k)
+            // Compute scores
             std::vector<ValuePtr> scores(seq_len);
             for (int j = 0; j < seq_len; ++j) {
                 ValuePtr dot = Value::create(0.0);
@@ -390,13 +346,13 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 }
             }
             
-            // Softmax
+            // Softmax - menggunakan fungsi dari utils.h
             auto probs = softmax(scores);
             
-            // Apply dropout to attention weights
+            // Apply dropout
             auto dropped_probs = attn_dropout.forward(probs);
             
-            // Apply to V: [seq_len, d_k]
+            // Apply to V
             std::vector<ValuePtr> out(d_k);
             for (int j = 0; j < d_k; ++j) {
                 out[j] = Value::create(0.0);
@@ -410,7 +366,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
     
-    // Concatenate heads: [seq_len, d_model]
+    // Concatenate heads
     std::vector<std::vector<ValuePtr>> concat(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         concat[i].reserve(d_model);
@@ -439,7 +395,8 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
 // ============================================================
 
 FeedForward::FeedForward(int d_model, int d_ff, double dropout) 
-    : d_model(d_model), d_ff(d_ff), dropout_p(dropout) {
+    : d_model(d_model), d_ff(d_ff), dropout_p(dropout),
+      ff_dropout(dropout) {
     
     // Initialize weights
     for (int i = 0; i < d_model * d_ff; ++i) {
@@ -456,9 +413,6 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
     for (int i = 0; i < d_model; ++i) {
         b2.push_back(Value::create(0.0));
     }
-    
-    // Dropout
-    ff_dropout = Dropout(dropout);
 }
 
 std::vector<ValuePtr> FeedForward::forward(const std::vector<ValuePtr>& x) {
