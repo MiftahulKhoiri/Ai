@@ -26,7 +26,7 @@ from minigpt import (
 # ============================================================
 # KONFIGURASI TRAINING
 # ============================================================
-SEQ_LEN = 8
+SEQ_LEN = 16
 BATCH_SIZE = 2
 EPOCHS = 50
 PATIENCE = 3
