@@ -12,11 +12,11 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
                             const std::vector<int>& target_ids,
                             const std::vector<int>& pad_mask);
 
-// Log softmax untuk stabilitas numerik yang lebih baik
-std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x);
-
-// Softmax
+// Softmax - dideklarasikan di sini
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x);
+
+// Log softmax untuk stabilitas numerik
+std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x);
 
 class AdamW {
 public:
@@ -67,7 +67,7 @@ private:
     int warmup, total, step_num;
     double base_lr, min_lr;
 
-    // Konstanta PI (bukan M_PI untuk menghindari konflik)
+    // Konstanta PI (bukan M_PI untuk menghindari konflik dengan cmath)
     static constexpr double PI = 3.14159265358979323846;
 };
 
