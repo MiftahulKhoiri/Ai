@@ -21,7 +21,6 @@
     #define SIMD_FLOAT_WIDTH 4
     #define SIMD_DOUBLE_WIDTH 2
 #else
-    // Fallback ke scalar
     #define USE_SCALAR 1
     #define SIMD_FLOAT_WIDTH 4
     #define SIMD_DOUBLE_WIDTH 2
@@ -35,32 +34,48 @@ struct aligned_t {} constexpr aligned{};
 struct unaligned_t {} constexpr unaligned{};
 
 // ============================
-// FLOAT TYPES
+// FLOAT VECTOR WRAPPER
 // ============================
-#if defined(USE_AVX2)
-    using float_vec = __m256;
-#elif defined(USE_SSE)
-    using float_vec = __m128;
-#elif defined(USE_NEON)
-    using float_vec = float32x4_t;
-#else
-    // Scalar fallback
-    struct float_vec { float data[4]; };
-#endif
+struct float_vec {
+    #if defined(USE_AVX2)
+        __m256 v;
+        float_vec() = default;
+        float_vec(__m256 v_) : v(v_) {}
+    #elif defined(USE_SSE)
+        __m128 v;
+        float_vec() = default;
+        float_vec(__m128 v_) : v(v_) {}
+    #elif defined(USE_NEON)
+        float32x4_t v;
+        float_vec() = default;
+        float_vec(float32x4_t v_) : v(v_) {}
+    #else
+        float data[4];
+        float_vec() = default;
+    #endif
+};
 
 // ============================
-// DOUBLE TYPES
+// DOUBLE VECTOR WRAPPER
 // ============================
-#if defined(USE_AVX2)
-    using double_vec = __m256d;
-#elif defined(USE_SSE)
-    using double_vec = __m128d;
-#elif defined(USE_NEON)
-    using double_vec = float64x2_t;
-#else
-    // Scalar fallback
-    struct double_vec { double data[2]; };
-#endif
+struct double_vec {
+    #if defined(USE_AVX2)
+        __m256d v;
+        double_vec() = default;
+        double_vec(__m256d v_) : v(v_) {}
+    #elif defined(USE_SSE)
+        __m128d v;
+        double_vec() = default;
+        double_vec(__m128d v_) : v(v_) {}
+    #elif defined(USE_NEON)
+        float64x2_t v;
+        double_vec() = default;
+        double_vec(float64x2_t v_) : v(v_) {}
+    #else
+        double data[2];
+        double_vec() = default;
+    #endif
+};
 
 // ============================
 // FLOAT LOAD/STORE
@@ -68,20 +83,20 @@ struct unaligned_t {} constexpr unaligned{};
 #if defined(USE_AVX2)
     inline float_vec load(const float* ptr, aligned_t) { return _mm256_load_ps(ptr); }
     inline float_vec load(const float* ptr, unaligned_t) { return _mm256_loadu_ps(ptr); }
-    inline void store(float* ptr, float_vec v, aligned_t) { _mm256_store_ps(ptr, v); }
-    inline void store(float* ptr, float_vec v, unaligned_t) { _mm256_storeu_ps(ptr, v); }
+    inline void store(float* ptr, float_vec v, aligned_t) { _mm256_store_ps(ptr, v.v); }
+    inline void store(float* ptr, float_vec v, unaligned_t) { _mm256_storeu_ps(ptr, v.v); }
     inline float_vec set1(float a) { return _mm256_set1_ps(a); }
 #elif defined(USE_SSE)
     inline float_vec load(const float* ptr, aligned_t) { return _mm_load_ps(ptr); }
     inline float_vec load(const float* ptr, unaligned_t) { return _mm_loadu_ps(ptr); }
-    inline void store(float* ptr, float_vec v, aligned_t) { _mm_store_ps(ptr, v); }
-    inline void store(float* ptr, float_vec v, unaligned_t) { _mm_storeu_ps(ptr, v); }
+    inline void store(float* ptr, float_vec v, aligned_t) { _mm_store_ps(ptr, v.v); }
+    inline void store(float* ptr, float_vec v, unaligned_t) { _mm_storeu_ps(ptr, v.v); }
     inline float_vec set1(float a) { return _mm_set1_ps(a); }
 #elif defined(USE_NEON)
     inline float_vec load(const float* ptr, aligned_t) { return vld1q_f32(ptr); }
     inline float_vec load(const float* ptr, unaligned_t) { return vld1q_f32(ptr); }
-    inline void store(float* ptr, float_vec v, aligned_t) { vst1q_f32(ptr, v); }
-    inline void store(float* ptr, float_vec v, unaligned_t) { vst1q_f32(ptr, v); }
+    inline void store(float* ptr, float_vec v, aligned_t) { vst1q_f32(ptr, v.v); }
+    inline void store(float* ptr, float_vec v, unaligned_t) { vst1q_f32(ptr, v.v); }
     inline float_vec set1(float a) { return vdupq_n_f32(a); }
 #else
     // Scalar fallback
@@ -110,20 +125,20 @@ struct unaligned_t {} constexpr unaligned{};
 #if defined(USE_AVX2)
     inline double_vec load(const double* ptr, aligned_t) { return _mm256_load_pd(ptr); }
     inline double_vec load(const double* ptr, unaligned_t) { return _mm256_loadu_pd(ptr); }
-    inline void store(double* ptr, double_vec v, aligned_t) { _mm256_store_pd(ptr, v); }
-    inline void store(double* ptr, double_vec v, unaligned_t) { _mm256_storeu_pd(ptr, v); }
+    inline void store(double* ptr, double_vec v, aligned_t) { _mm256_store_pd(ptr, v.v); }
+    inline void store(double* ptr, double_vec v, unaligned_t) { _mm256_storeu_pd(ptr, v.v); }
     inline double_vec set1(double a) { return _mm256_set1_pd(a); }
 #elif defined(USE_SSE)
     inline double_vec load(const double* ptr, aligned_t) { return _mm_load_pd(ptr); }
     inline double_vec load(const double* ptr, unaligned_t) { return _mm_loadu_pd(ptr); }
-    inline void store(double* ptr, double_vec v, aligned_t) { _mm_store_pd(ptr, v); }
-    inline void store(double* ptr, double_vec v, unaligned_t) { _mm_storeu_pd(ptr, v); }
+    inline void store(double* ptr, double_vec v, aligned_t) { _mm_store_pd(ptr, v.v); }
+    inline void store(double* ptr, double_vec v, unaligned_t) { _mm_storeu_pd(ptr, v.v); }
     inline double_vec set1(double a) { return _mm_set1_pd(a); }
 #elif defined(USE_NEON)
     inline double_vec load(const double* ptr, aligned_t) { return vld1q_f64(ptr); }
     inline double_vec load(const double* ptr, unaligned_t) { return vld1q_f64(ptr); }
-    inline void store(double* ptr, double_vec v, aligned_t) { vst1q_f64(ptr, v); }
-    inline void store(double* ptr, double_vec v, unaligned_t) { vst1q_f64(ptr, v); }
+    inline void store(double* ptr, double_vec v, aligned_t) { vst1q_f64(ptr, v.v); }
+    inline void store(double* ptr, double_vec v, unaligned_t) { vst1q_f64(ptr, v.v); }
     inline double_vec set1(double a) { return vdupq_n_f64(a); }
 #else
     // Scalar fallback
@@ -148,23 +163,23 @@ struct unaligned_t {} constexpr unaligned{};
 // FLOAT OPERATIONS
 // ============================
 #if defined(USE_AVX2)
-    inline float_vec add(float_vec a, float_vec b) { return _mm256_add_ps(a, b); }
-    inline float_vec sub(float_vec a, float_vec b) { return _mm256_sub_ps(a, b); }
-    inline float_vec mul(float_vec a, float_vec b) { return _mm256_mul_ps(a, b); }
-    inline float_vec div(float_vec a, float_vec b) { return _mm256_div_ps(a, b); }
-    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm256_fmadd_ps(a, b, c); }
+    inline float_vec add(float_vec a, float_vec b) { return _mm256_add_ps(a.v, b.v); }
+    inline float_vec sub(float_vec a, float_vec b) { return _mm256_sub_ps(a.v, b.v); }
+    inline float_vec mul(float_vec a, float_vec b) { return _mm256_mul_ps(a.v, b.v); }
+    inline float_vec div(float_vec a, float_vec b) { return _mm256_div_ps(a.v, b.v); }
+    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm256_fmadd_ps(a.v, b.v, c.v); }
 #elif defined(USE_SSE)
-    inline float_vec add(float_vec a, float_vec b) { return _mm_add_ps(a, b); }
-    inline float_vec sub(float_vec a, float_vec b) { return _mm_sub_ps(a, b); }
-    inline float_vec mul(float_vec a, float_vec b) { return _mm_mul_ps(a, b); }
-    inline float_vec div(float_vec a, float_vec b) { return _mm_div_ps(a, b); }
-    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm_fmadd_ps(a, b, c); }
+    inline float_vec add(float_vec a, float_vec b) { return _mm_add_ps(a.v, b.v); }
+    inline float_vec sub(float_vec a, float_vec b) { return _mm_sub_ps(a.v, b.v); }
+    inline float_vec mul(float_vec a, float_vec b) { return _mm_mul_ps(a.v, b.v); }
+    inline float_vec div(float_vec a, float_vec b) { return _mm_div_ps(a.v, b.v); }
+    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm_fmadd_ps(a.v, b.v, c.v); }
 #elif defined(USE_NEON)
-    inline float_vec add(float_vec a, float_vec b) { return vaddq_f32(a, b); }
-    inline float_vec sub(float_vec a, float_vec b) { return vsubq_f32(a, b); }
-    inline float_vec mul(float_vec a, float_vec b) { return vmulq_f32(a, b); }
-    inline float_vec div(float_vec a, float_vec b) { return vdivq_f32(a, b); }
-    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return vfmaq_f32(c, a, b); } // c = a*b + c
+    inline float_vec add(float_vec a, float_vec b) { return vaddq_f32(a.v, b.v); }
+    inline float_vec sub(float_vec a, float_vec b) { return vsubq_f32(a.v, b.v); }
+    inline float_vec mul(float_vec a, float_vec b) { return vmulq_f32(a.v, b.v); }
+    inline float_vec div(float_vec a, float_vec b) { return vdivq_f32(a.v, b.v); }
+    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return vfmaq_f32(c.v, a.v, b.v); }
 #else
     // Scalar fallback
     inline float_vec add(float_vec a, float_vec b) {
@@ -198,23 +213,23 @@ struct unaligned_t {} constexpr unaligned{};
 // DOUBLE OPERATIONS
 // ============================
 #if defined(USE_AVX2)
-    inline double_vec add(double_vec a, double_vec b) { return _mm256_add_pd(a, b); }
-    inline double_vec sub(double_vec a, double_vec b) { return _mm256_sub_pd(a, b); }
-    inline double_vec mul(double_vec a, double_vec b) { return _mm256_mul_pd(a, b); }
-    inline double_vec div(double_vec a, double_vec b) { return _mm256_div_pd(a, b); }
-    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm256_fmadd_pd(a, b, c); }
+    inline double_vec add(double_vec a, double_vec b) { return _mm256_add_pd(a.v, b.v); }
+    inline double_vec sub(double_vec a, double_vec b) { return _mm256_sub_pd(a.v, b.v); }
+    inline double_vec mul(double_vec a, double_vec b) { return _mm256_mul_pd(a.v, b.v); }
+    inline double_vec div(double_vec a, double_vec b) { return _mm256_div_pd(a.v, b.v); }
+    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm256_fmadd_pd(a.v, b.v, c.v); }
 #elif defined(USE_SSE)
-    inline double_vec add(double_vec a, double_vec b) { return _mm_add_pd(a, b); }
-    inline double_vec sub(double_vec a, double_vec b) { return _mm_sub_pd(a, b); }
-    inline double_vec mul(double_vec a, double_vec b) { return _mm_mul_pd(a, b); }
-    inline double_vec div(double_vec a, double_vec b) { return _mm_div_pd(a, b); }
-    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm_fmadd_pd(a, b, c); }
+    inline double_vec add(double_vec a, double_vec b) { return _mm_add_pd(a.v, b.v); }
+    inline double_vec sub(double_vec a, double_vec b) { return _mm_sub_pd(a.v, b.v); }
+    inline double_vec mul(double_vec a, double_vec b) { return _mm_mul_pd(a.v, b.v); }
+    inline double_vec div(double_vec a, double_vec b) { return _mm_div_pd(a.v, b.v); }
+    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm_fmadd_pd(a.v, b.v, c.v); }
 #elif defined(USE_NEON)
-    inline double_vec add(double_vec a, double_vec b) { return vaddq_f64(a, b); }
-    inline double_vec sub(double_vec a, double_vec b) { return vsubq_f64(a, b); }
-    inline double_vec mul(double_vec a, double_vec b) { return vmulq_f64(a, b); }
-    inline double_vec div(double_vec a, double_vec b) { return vdivq_f64(a, b); }
-    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return vfmaq_f64(c, a, b); }
+    inline double_vec add(double_vec a, double_vec b) { return vaddq_f64(a.v, b.v); }
+    inline double_vec sub(double_vec a, double_vec b) { return vsubq_f64(a.v, b.v); }
+    inline double_vec mul(double_vec a, double_vec b) { return vmulq_f64(a.v, b.v); }
+    inline double_vec div(double_vec a, double_vec b) { return vdivq_f64(a.v, b.v); }
+    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return vfmaq_f64(c.v, a.v, b.v); }
 #else
     // Scalar fallback
     inline double_vec add(double_vec a, double_vec b) {
@@ -250,16 +265,16 @@ struct unaligned_t {} constexpr unaligned{};
 #endif
 
 // ============================
-// OPERATOR OVERLOADS
+// OPERATOR OVERLOADS (sekarang menggunakan struct)
 // ============================
-inline float_vec operator+(float_vec a, float_vec b) { return add(a,b); }
-inline float_vec operator-(float_vec a, float_vec b) { return sub(a,b); }
-inline float_vec operator*(float_vec a, float_vec b) { return mul(a,b); }
-inline float_vec operator/(float_vec a, float_vec b) { return div(a,b); }
+inline float_vec operator+(float_vec a, float_vec b) { return add(a, b); }
+inline float_vec operator-(float_vec a, float_vec b) { return sub(a, b); }
+inline float_vec operator*(float_vec a, float_vec b) { return mul(a, b); }
+inline float_vec operator/(float_vec a, float_vec b) { return div(a, b); }
 
-inline double_vec operator+(double_vec a, double_vec b) { return add(a,b); }
-inline double_vec operator-(double_vec a, double_vec b) { return sub(a,b); }
-inline double_vec operator*(double_vec a, double_vec b) { return mul(a,b); }
-inline double_vec operator/(double_vec a, double_vec b) { return div(a,b); }
+inline double_vec operator+(double_vec a, double_vec b) { return add(a, b); }
+inline double_vec operator-(double_vec a, double_vec b) { return sub(a, b); }
+inline double_vec operator*(double_vec a, double_vec b) { return mul(a, b); }
+inline double_vec operator/(double_vec a, double_vec b) { return div(a, b); }
 
 } // namespace simd
