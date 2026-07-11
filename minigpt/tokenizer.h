@@ -26,16 +26,40 @@ public:
     bool save(const std::string& path) const;
     bool load(const std::string& path);
 
-    // ===== TAMBAHKAN GETTER DAN SETTER DI SINI =====
+    // ===== GETTER DAN SETTER =====
     // Getter (akses baca)
     const std::unordered_map<std::string, int>& get_vocab() const { return vocab; }
     const std::unordered_map<int, std::string>& get_inv_vocab() const { return inv_vocab; }
     const std::vector<std::pair<std::string, std::string>>& get_merge_order() const { return merge_order; }
-    
+
     // Setter (akses tulis, diperlukan untuk deserialisasi dari Python)
     void set_vocab(const std::unordered_map<std::string, int>& v) { vocab = v; }
     void set_inv_vocab(const std::unordered_map<int, std::string>& v) { inv_vocab = v; }
     void set_merge_order(const std::vector<std::pair<std::string, std::string>>& m) { merge_order = m; }
+    // ===== AKHIR GETTER/SETTER =====
+
+    // ===== TAMBAHKAN METHOD INI UNTUK GENERATION =====
+    int vocab_size() const { return static_cast<int>(vocab.size()); }
+    
+    int get_eos_token_id() const {
+        auto it = vocab.find(EOS_TOKEN);
+        return (it != vocab.end()) ? it->second : -1;
+    }
+    
+    int get_bos_token_id() const {
+        auto it = vocab.find(BOS_TOKEN);
+        return (it != vocab.end()) ? it->second : -1;
+    }
+    
+    int get_pad_token_id() const {
+        auto it = vocab.find(PAD_TOKEN);
+        return (it != vocab.end()) ? it->second : -1;
+    }
+    
+    int get_unk_token_id() const {
+        auto it = vocab.find(UNK_TOKEN);
+        return (it != vocab.end()) ? it->second : -1;
+    }
     // ===== AKHIR TAMBAHAN =====
 
 private:
