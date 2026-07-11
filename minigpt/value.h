@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdint>   // TAMBAHKAN
 
 struct Value : std::enable_shared_from_this<Value> {
     using Ptr = std::shared_ptr<Value>;  // TAMBAHKAN INI!
