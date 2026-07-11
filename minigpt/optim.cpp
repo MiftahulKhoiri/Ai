@@ -16,12 +16,9 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     }
     
     // Hitung exp dan sum
-    std::vector<ValuePtr> exp_vals;
-    exp_vals.reserve(x.size());
     double sum = 0.0;
     for (size_t i = 0; i < x.size(); ++i) {
         double val = std::exp(x[i]->data - max_val);
-        exp_vals.push_back(Value::create(val));
         sum += val;
     }
     
@@ -29,6 +26,7 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     std::vector<ValuePtr> result;
     result.reserve(x.size());
     double log_sum = std::log(sum);
+    
     for (size_t i = 0; i < x.size(); ++i) {
         result.push_back(Value::create(x[i]->data - max_val - log_sum));
         // Backward untuk log_softmax - CAPTURE max_val!
@@ -97,22 +95,19 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
 // ============================================================
 AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1, 
              double betas2, double eps, double weight_decay, bool decoupled_wd)
-    : lr(lr),                           // urutan sesuai deklarasi di header optim.h
-      params(std::move(params)),        // params setelah lr
-      b1(betas1),
-      b2(betas2),
-      eps(eps),
-      wd(weight_decay),
-      decoupled_wd(decoupled_wd),
-      m(this->params.size(), 0.0),
-      v(this->params.size(), 0.0),
-      t(0)
+    : lr(lr),                           // 1. lr (public, di atas params di header)
+      params(std::move(params)),        // 2. params
+      b1(betas1),                       // 3. b1
+      b2(betas2),                       // 4. b2
+      eps(eps),                         // 5. eps
+      wd(weight_decay),                 // 6. wd
+      decoupled_wd(decoupled_wd),       // 7. decoupled_wd
+      m(this->params.size(), 0.0),      // 8. m
+      v(this->params.size(), 0.0),      // 9. v
+      t(0)                              // 10. t
 {
-    // Perhatikan: urutan inisialisasi mengikuti urutan deklarasi di header:
-    // 1. lr (public, di atas params di header)
-    // 2. params (private, setelah lr)
-    // 3. b1, b2, eps, wd, decoupled_wd
-    // 4. m, v, t
+    // Urutan sesuai dengan deklarasi di optim.h:
+    // lr (public) → params → b1 → b2 → eps → wd → decoupled_wd → m → v → t
 }
 
 void AdamW::zero_grad() {
