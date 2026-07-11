@@ -26,7 +26,7 @@ from minigpt import (
 # ============================================================
 # KONFIGURASI TRAINING
 # ============================================================
-SEQ_LEN = 16
+SEQ_LEN = 8
 BATCH_SIZE = 2
 EPOCHS = 50
 PATIENCE = 3
@@ -35,7 +35,7 @@ WARMUP_STEPS = 30
 TOTAL_STEPS = 200
 ADDITIONAL_STEPS = 100
 MAX_GRAD_NORM = 1.0
-D_MODEL = 64
+D_MODEL = 16
 N_HEADS = 4
 N_LAYERS = 2
 D_FF = 16
