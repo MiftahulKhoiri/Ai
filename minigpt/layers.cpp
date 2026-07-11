@@ -1,6 +1,6 @@
 // layers.cpp
 #include "layers.h"
-#include "utils.h"  // TAMBAHKAN INI untuk softmax
+#include "utils.h"
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -76,7 +76,7 @@ std::vector<ValuePtr> Embedding::forward(const std::vector<int>& ids) {
     for (int id : ids) {
         if (id < 0 || id >= (int)weight.size()) {
             std::cerr << "[ERROR] Embedding: id " << id << " out of range (vocab size " << weight.size() << ")" << std::endl;
-            result.push_back(Value::create(0.0)); // Fallback
+            result.push_back(Value::create(0.0));
             continue;
         }
         result.push_back(weight[id]);
@@ -90,7 +90,6 @@ std::vector<ValuePtr> Embedding::forward(const std::vector<int>& ids) {
 
 PositionalEmbedding::PositionalEmbedding(int max_len, int d_model) 
     : max_len(max_len), d_model(d_model) {
-    // Pre-compute positional encodings
     pos_encoding.reserve(max_len);
     for (int pos = 0; pos < max_len; ++pos) {
         std::vector<ValuePtr> encoding;
@@ -120,7 +119,6 @@ std::vector<ValuePtr> PositionalEmbedding::forward(int seq_len) {
         return result;
     }
     
-    // Return first seq_len positions as copies
     for (int i = 0; i < seq_len; ++i) {
         for (const auto& v : pos_encoding[i]) {
             result.push_back(v);
@@ -178,21 +176,18 @@ LayerNorm::LayerNorm(int d_model, double eps)
 std::vector<ValuePtr> LayerNorm::forward(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
     
-    // Compute mean
     ValuePtr mean = Value::create(0.0);
     for (const auto& v : x) {
         mean = mean + v;
     }
     mean = mean / Value::create((double)x.size());
     
-    // Compute variance
     ValuePtr var = Value::create(0.0);
     for (const auto& v : x) {
         var = var + ((v - mean) * (v - mean));
     }
     var = var / Value::create((double)x.size());
     
-    // Normalize
     std::vector<ValuePtr> result;
     result.reserve(x.size());
     ValuePtr stddev = sqrt(var + Value::create(eps));
@@ -220,6 +215,7 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
     }
     
     int d_k = d_model / n_heads;
+    (void)d_k; // Suppress unused variable warning
     
     // Initialize weights
     for (int i = 0; i < d_model * d_model; ++i) {
@@ -346,7 +342,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 }
             }
             
-            // Softmax - menggunakan fungsi dari utils.h
+            // Softmax
             auto probs = softmax(scores);
             
             // Apply dropout
@@ -371,7 +367,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
     for (int i = 0; i < seq_len; ++i) {
         concat[i].reserve(d_model);
         for (int h = 0; h < n_heads; ++h) {
-            if (attn_outputs[i][h].size() == d_k) {
+            if (attn_outputs[i][h].size() == static_cast<size_t>(d_k)) {
                 concat[i].insert(concat[i].end(), attn_outputs[i][h].begin(), attn_outputs[i][h].end());
             }
         }
