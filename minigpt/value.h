@@ -1,3 +1,4 @@
+// value.h
 #pragma once
 
 #include <functional>
@@ -6,6 +7,8 @@
 #include <vector>
 
 struct Value : std::enable_shared_from_this<Value> {
+    using Ptr = std::shared_ptr<Value>;  // TAMBAHKAN INI!
+    
     double data;
     double grad;
 
