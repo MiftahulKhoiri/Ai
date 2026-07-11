@@ -77,8 +77,7 @@ std::vector<std::vector<ValuePtr>> MiniGPT::forward(
         for (int j = 0; j < d_model; ++j) {
             if (i < (int)emb.size() && j < (int)emb[i]->data) {
                 // Simplified - in practice, emb[i] is a ValuePtr
-                // We need to handle this properly
-                x[i].push_back(Value::create(0.0)); // Placeholder
+                x[i].push_back(Value::create(0.0));
             } else {
                 x[i].push_back(Value::create(0.0));
             }
@@ -153,7 +152,6 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
     
     // Pass through blocks (simplified for incremental)
     for (size_t i = 0; i < blocks.size(); ++i) {
-        // In incremental mode, we just pass single token
         std::vector<std::vector<ValuePtr>> x_batch = {x};
         x_batch = blocks[i].forward(x_batch, {});
         if (!x_batch.empty() && !x_batch[0].empty()) {
@@ -180,13 +178,6 @@ std::vector<ValuePtr> MiniGPT::parameters() {
     // Embedding weights
     for (auto& p : embed.weight) {
         params.push_back(p);
-    }
-    
-    // Positional embeddings (not trainable, but include if needed)
-    for (auto& pos_vec : pos_embed.pos_encoding) {
-        for (auto& p : pos_vec) {
-            // params.push_back(p); // Uncomment if trainable
-        }
     }
     
     // Transformer blocks
