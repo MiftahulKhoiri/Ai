@@ -1,45 +1,34 @@
+// utils.cpp
 #include "utils.h"
-#include <algorithm>
-#include <limits>
+#include <cmath>
 
-std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& logits) {
-    // Tangani input kosong
-    if (logits.empty()) {
-        return {};
-    }
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
-    // Cari nilai maksimum untuk numerical stability
-    auto max_it = std::max_element(
-        logits.begin(),
-        logits.end(),
-        [](const ValuePtr& a, const ValuePtr& b) {
-            return a->data < b->data;
-        });
-
-    double max_data = (*max_it)->data;
-
-    // Hitung exp(logit - max)
-    std::vector<ValuePtr> exps;
-    exps.reserve(logits.size());
-
-    for (const auto& v : logits) {
-        exps.push_back(exp(v - max_data));
-    }
-
-    // Jumlahkan semua nilai eksponensial
-    ValuePtr sum = Value::create(0.0);
-
-    for (const auto& e : exps) {
-        sum = sum + e;
-    }
-
-    // Normalisasi menjadi probabilitas
-    std::vector<ValuePtr> probs;
-    probs.reserve(logits.size());
-
-    for (const auto& e : exps) {
-        probs.push_back(e / sum);
-    }
-
-    return probs;
+ValuePtr gelu(const ValuePtr& x) {
+    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    double val = x->data;
+    double c = std::sqrt(2.0 / M_PI);
+    double x3 = val * val * val;
+    double tanh_arg = c * (val + 0.044715 * x3);
+    double result = 0.5 * val * (1.0 + std::tanh(tanh_arg));
+    
+    auto out = Value::create(result);
+    out->_prev = {x};
+    out->_op = "gelu";
+    
+    out->_backward = [out, x]() {
+        double grad = out->grad;
+        double v = x->data;
+        double c = std::sqrt(2.0 / M_PI);
+        double v3 = v * v * v;
+        double tanh_arg = c * (v + 0.044715 * v3);
+        double tanh_val = std::tanh(tanh_arg);
+        double sech2 = 1.0 - tanh_val * tanh_val;
+        double dgelu = 0.5 * (1.0 + tanh_val) + 0.5 * v * c * (1.0 + 3.0 * 0.044715 * v * v) * sech2;
+        x->grad += dgelu * grad;
+    };
+    
+    return out;
 }
