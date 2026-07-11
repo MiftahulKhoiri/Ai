@@ -3,7 +3,8 @@
 #include "backward.h"
 #include <cmath>
 #include <sstream>
-#include <algorithm>  // TAMBAHKAN INI!
+#include <algorithm>
+#include <iostream>
 
 Value::Value(double data, std::vector<Value::Ptr> children, std::string op)
     : data(data), grad(0.0), _prev(children), _op(op) {}
@@ -17,7 +18,6 @@ void Value::backward() {
     std::vector<Value::Ptr> visited;
     
     std::function<void(Value::Ptr)> build_topo = [&](Value::Ptr v) {
-        // Perbaiki: gunakan std::find dengan tipe yang eksplisit
         auto it = std::find(visited.begin(), visited.end(), v);
         if (it == visited.end()) {
             visited.push_back(v);
@@ -27,7 +27,6 @@ void Value::backward() {
             topo.push_back(v);
         }
     };
-    
     build_topo(shared_from_this());
     
     this->grad = 1.0;
@@ -181,18 +180,5 @@ ValuePtr relu(const ValuePtr& a) {
     return out;
 }
 
-ValuePtr gelu(const ValuePtr& a) {
-    double x = a->data;
-    double c = std::sqrt(2.0 / M_PI);
-    double x3 = x * x * x;
-    double tanh_arg = c * (x + 0.044715 * x3);
-    double gelu_val = 0.5 * x * (1.0 + std::tanh(tanh_arg));
-    
-    auto out = std::make_shared<Value>(gelu_val, 
-                                        std::vector<ValuePtr>{a}, 
-                                        "gelu");
-    out->_backward = [out, a]() {
-        autograd::backward::gelu(out.get(), a);
-    };
-    return out;
-}
+// HAPUS gelu dari sini - sudah ada di utils.cpp
+// ValuePtr gelu(const ValuePtr& a) { ... }
