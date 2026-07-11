@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# training.py - Script untuk training MiniGPT dengan dataset JSON
+# training.py - Script untuk training MiniGPT
 
 import sys
 import json
@@ -10,12 +10,12 @@ import random
 import math
 from typing import List, Tuple, Dict, Any
 
-# Import dari library minigpt yang sudah kita buat
+# Import dari library minigpt
 from minigpt import (
-    MiniGPT, 
-    ByteLevelBPETokenizer, 
-    AdamW, 
-    WarmupCosineScheduler, 
+    MiniGPT,
+    Tokenizer,  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
+    AdamW,
+    WarmupCosineScheduler,
     generate,
     cross_entropy_loss,
     clip_grad_norm,
@@ -44,7 +44,7 @@ DROPOUT = 0.1
 VOCAB_SIZE = 200
 
 # ============================================================
-# FUNGSI MEMORI (untuk monitoring)
+# FUNGSI MEMORI
 # ============================================================
 def get_memory_info():
     """Membaca informasi memori dari /proc (untuk Linux/Android)"""
@@ -78,7 +78,6 @@ def get_memory_info():
     return mem_info
 
 def print_memory_info(label="", show_system=True):
-    """Print memory usage information"""
     mem = get_memory_info()
     if label:
         print(f"\n{'='*60}\n📊 MEMORI: {label}\n{'='*60}")
@@ -93,11 +92,9 @@ def print_memory_info(label="", show_system=True):
         print(f"  🔹 RAM Sistem     : tidak dapat dibaca")
 
 def get_process_memory_mb():
-    """Get current process memory in MB"""
     return get_memory_info()['process_mb']
 
 def format_time(seconds):
-    """Format time in human readable format"""
     if seconds < 60:
         return f"{seconds:.1f} detik"
     elif seconds < 3600:
@@ -109,7 +106,6 @@ def format_time(seconds):
         return f"{h} jam {m} menit {s} detik"
 
 def get_next_version():
-    """Get next version number for checkpoint"""
     files = glob.glob("Ai_*.json")
     max_ver = 0
     for f in files:
@@ -122,7 +118,6 @@ def get_next_version():
     return max_ver + 1
 
 def estimate_model_size(vocab_size, d_model, n_layers, n_heads, d_ff, max_len):
-    """Estimate model size in parameters"""
     emb = vocab_size * d_model + max_len * d_model
     attn = 4 * d_model * d_model
     ffn = 2 * d_model * d_ff + d_ff + d_model
@@ -133,17 +128,14 @@ def estimate_model_size(vocab_size, d_model, n_layers, n_heads, d_ff, max_len):
 # FUNGSI DATASET
 # ============================================================
 def build_dataset(tokenized: List[List[int]], seq_len: int, pad_id: int) -> List[List[int]]:
-    """Build dataset from tokenized sentences"""
     examples = []
     for tokens in tokenized:
         if len(tokens) < 2:
             continue
-        # Jika lebih pendek dari seq_len, padding
         if len(tokens) < seq_len:
             padded = tokens + [pad_id] * (seq_len - len(tokens))
             examples.append(padded)
         else:
-            # Sliding window
             for i in range(0, len(tokens) - seq_len + 1, seq_len // 2):
                 seq = tokens[i:i + seq_len]
                 if len(seq) == seq_len:
@@ -151,7 +143,6 @@ def build_dataset(tokenized: List[List[int]], seq_len: int, pad_id: int) -> List
     return examples
 
 def iter_batches(examples: List[List[int]], batch_size: int, shuffle: bool = True):
-    """Iterate over batches"""
     if shuffle:
         indices = list(range(len(examples)))
         random.shuffle(indices)
@@ -165,11 +156,9 @@ def iter_batches(examples: List[List[int]], batch_size: int, shuffle: bool = Tru
             yield batch
 
 def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
-    """Train on a single batch"""
     total_loss = 0.0
     n_samples = 0
     
-    # Zero grad
     optimizer.zero_grad()
     
     for seq in batch:
@@ -179,37 +168,23 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
         input_ids = seq[:-1]
         target_ids = seq[1:]
         
-        # Forward
         logits = model.forward(input_ids)
-        
-        # Compute loss
         loss = cross_entropy_loss(logits, target_ids, [])
         
-        # Accumulate loss (backward akan dijalankan setelah semua batch)
         if n_samples == 0:
             total_loss_value = loss
         else:
-            # Kita hanya bisa backward satu loss karena autograd
-            # Simpan loss terakhir
             total_loss_value = loss
         
         n_samples += 1
     
-    # Backward pada loss terakhir
     if n_samples > 0:
         total_loss_value.backward()
-        
-        # Clip gradient
         params = model.parameters()
         grad_norm = clip_grad_norm(params, max_grad_norm)
-        
-        # Step optimizer
         optimizer.step()
-        
-        # Step scheduler
         if scheduler:
             scheduler.step()
-        
         return total_loss_value.data, grad_norm
     
     return 0.0, 0.0
@@ -219,7 +194,6 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
 # ============================================================
 def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None, 
                     config=None, total_steps=0, epoch=0, loss=0.0):
-    """Save checkpoint to JSON file"""
     checkpoint = {
         'config': config or {},
         'total_steps': total_steps,
@@ -235,19 +209,16 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
         'lr': 0
     }
     
-    # Save model parameters
     if model:
         params = model.parameters()
         checkpoint['params'] = [p.data for p in params]
     
-    # Save optimizer state
     if optimizer:
         checkpoint['m'] = optimizer.get_m()
         checkpoint['v'] = optimizer.get_v()
         checkpoint['t'] = optimizer.get_t()
         checkpoint['lr'] = optimizer.lr
     
-    # Add step if from scheduler
     if scheduler:
         checkpoint['scheduler_step'] = scheduler.get_step_num()
     
@@ -255,12 +226,11 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
         json.dump(checkpoint, f, indent=2, ensure_ascii=False)
 
 def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
-    """Load checkpoint from JSON file"""
     with open(path, 'r', encoding='utf-8') as f:
         checkpoint = json.load(f)
     
     # Restore tokenizer
-    tokenizer = ByteLevelBPETokenizer()
+    tokenizer = Tokenizer()  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
     if 'vocab' in checkpoint and checkpoint['vocab']:
         vocab = {k: v for k, v in checkpoint['vocab'].items()}
         inv_vocab = {int(k): v for k, v in checkpoint['inv_vocab'].items()}
@@ -269,7 +239,6 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         tokenizer.set_inv_vocab(inv_vocab)
         tokenizer.set_merge_order(merge_order)
     
-    # Restore config
     config = checkpoint.get('config', {})
     vocab_size = config.get('vocab_size', len(tokenizer.get_vocab()))
     d_model = config.get('d_model', D_MODEL)
@@ -279,7 +248,6 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
     max_len = config.get('max_len', MAX_LEN)
     dropout = config.get('dropout', DROPOUT)
     
-    # Create model
     model = MiniGPT(
         vocab_size=vocab_size,
         d_model=d_model,
@@ -290,19 +258,16 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         dropout=dropout
     )
     
-    # Restore model parameters
     if 'params' in checkpoint and checkpoint['params']:
         params = model.parameters()
         for i, p in enumerate(params):
             if i < len(checkpoint['params']):
                 p.data = checkpoint['params'][i]
     
-    # Create optimizer
     params = model.parameters()
     lr = checkpoint.get('lr', LR)
     optimizer = AdamW(params, lr=lr, weight_decay=0.01)
     
-    # Restore optimizer state
     if 'm' in checkpoint and checkpoint['m']:
         optimizer.set_m(checkpoint['m'])
     if 'v' in checkpoint and checkpoint['v']:
@@ -312,11 +277,9 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
     if 'lr' in checkpoint:
         optimizer.lr = checkpoint['lr']
     
-    # Calculate total steps
     scheduler_step = checkpoint.get('scheduler_step', 0)
     total_steps = scheduler_step + additional_steps
     
-    # Create scheduler
     scheduler = WarmupCosineScheduler(
         optimizer,
         warmup_steps=warmup_steps,
@@ -331,7 +294,6 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
     return model, optimizer, scheduler, tokenizer, config, total_steps
 
 def test_generate(model, tokenizer):
-    """Test generation with sample prompts"""
     prompts = ["Halo", "Apa kabar", "Saya suka"]
     print("\n" + "="*60 + "\n🧪 TES GENERATE\n" + "="*60)
     for i, p in enumerate(prompts, 1):
@@ -348,7 +310,6 @@ def test_generate(model, tokenizer):
 # MAIN
 # ============================================================
 def main():
-    # --- Parsing command line ---
     if len(sys.argv) < 2:
         print("Penggunaan: python3 training.py <data.json> [checkpoint.json]")
         return
@@ -407,7 +368,7 @@ def main():
         print(f"  Total karakter corpus : {len(corpus)}")
         print(f"  Target vocab size     : {VOCAB_SIZE}")
         t0 = time.time()
-        tokenizer = ByteLevelBPETokenizer()
+        tokenizer = Tokenizer()  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
         tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
         print(f"  Tokenizer selesai     : {format_time(time.time()-t0)}")
         print(f"  Vocab size aktual     : {len(tokenizer.get_vocab())}")
@@ -439,7 +400,7 @@ def main():
         return
     print_memory_info("SETELAH BUILD DATASET")
 
-    # 4. Inisialisasi model (hanya jika training baru)
+    # 4. Inisialisasi model
     if not resume_checkpoint:
         print("\n" + "="*60)
         print("🧠 4. INISIALISASI MODEL")
@@ -468,7 +429,6 @@ def main():
         print(f"  Parameter aktual: {len(all_params)} tensor")
         print_memory_info("SETELAH MODEL")
 
-        # Optimizer & scheduler baru
         print("\n" + "="*60)
         print("⚙️  5. OPTIMIZER & SCHEDULER")
         print("="*60)
@@ -491,7 +451,7 @@ def main():
         print(f"  Model siap, training mode aktif.")
         print(f"  Optimizer & scheduler dari checkpoint.")
 
-    # 6. TRAINING
+    # 5. TRAINING
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
@@ -551,7 +511,6 @@ def main():
             'time': format_time(epoch_time)
         })
 
-        # Early Stopping
         if avg_loss < best_loss:
             best_loss = avg_loss
             wait = 0
@@ -584,7 +543,7 @@ def main():
             print(f"  {h['epoch']:3d}    {h['avg_loss']:.4f}     {h['best_loss']:.4f}   {h['lr']:.8f}   {h['time']}")
     print_memory_info("SETELAH TRAINING")
 
-    # 7. SAVE CHECKPOINT
+    # 6. SAVE CHECKPOINT
     print("\n" + "="*60)
     print("💾 7. MENYIMPAN CHECKPOINT BARU")
     print("="*60)
