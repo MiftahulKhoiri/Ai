@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <array>
 #include <utility>
+#include <cstdint>   // TAMBAHKAN
 
 struct pair_hash {
     std::size_t operator()(const std::pair<std::string, std::string>& p) const noexcept;
