@@ -1,7 +1,57 @@
+// optim.cpp
 #include "optim.h"
+#include "layers.h"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <iostream>
+
+// ============================================================
+// SOFTMAX
+// ============================================================
+std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
+    if (x.empty()) return {};
+    
+    // Cari max untuk stabilitas numerik
+    double max_val = x[0]->data;
+    for (const auto& v : x) {
+        if (v->data > max_val) max_val = v->data;
+    }
+    
+    // Hitung exp dan sum
+    std::vector<ValuePtr> exps;
+    exps.reserve(x.size());
+    double sum = 0.0;
+    for (const auto& v : x) {
+        double exp_val = std::exp(v->data - max_val);
+        auto exp_v = Value::create(exp_val);
+        exps.push_back(exp_v);
+        sum += exp_val;
+    }
+    
+    // Normalisasi
+    std::vector<ValuePtr> result;
+    result.reserve(x.size());
+    for (size_t i = 0; i < x.size(); ++i) {
+        auto prob = exps[i] / Value::create(sum);
+        result.push_back(prob);
+    }
+    
+    // Backward untuk softmax
+    for (size_t i = 0; i < x.size(); ++i) {
+        result[i]->_backward = [result, x, i]() {
+            double grad = result[i]->grad;
+            for (size_t j = 0; j < x.size(); ++j) {
+                double delta = (i == j) ? 1.0 : 0.0;
+                double p_i = result[i]->data;
+                double p_j = result[j]->data;
+                x[j]->grad += grad * p_i * (delta - p_j);
+            }
+        };
+    }
+    
+    return result;
+}
 
 // ============================================================
 // LOG SOFTMAX
@@ -18,27 +68,30 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     // Hitung exp dan sum
     double sum = 0.0;
     for (size_t i = 0; i < x.size(); ++i) {
-        double val = std::exp(x[i]->data - max_val);
-        sum += val;
+        sum += std::exp(x[i]->data - max_val);
     }
     
-    // Log-softmax: log(exp(x_i) / sum) = x_i - max - log(sum)
+    double log_sum = std::log(sum);
     std::vector<ValuePtr> result;
     result.reserve(x.size());
-    double log_sum = std::log(sum);
     
     for (size_t i = 0; i < x.size(); ++i) {
-        result.push_back(Value::create(x[i]->data - max_val - log_sum));
-        // Backward untuk log_softmax - CAPTURE max_val!
-        result.back()->_backward = [result, x, i, sum, max_val]() {
-            double grad = result[i]->grad;
+        double log_val = x[i]->data - max_val - log_sum;
+        auto v = Value::create(log_val);
+        
+        // Backward untuk log_softmax
+        v->_backward = [v, x, i, max_val, sum]() {
+            double grad = v->grad;
             for (size_t j = 0; j < x.size(); ++j) {
                 double delta = (i == j) ? 1.0 : 0.0;
                 double softmax_j = std::exp(x[j]->data - max_val) / sum;
                 x[j]->grad += grad * (delta - softmax_j);
             }
         };
+        
+        result.push_back(v);
     }
+    
     return result;
 }
 
@@ -48,6 +101,7 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
 ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
                             const std::vector<int>& target_ids,
                             const std::vector<int>& pad_mask) {
+    
     if (logits_seq.empty() || target_ids.empty()) {
         return Value::create(0.0);
     }
@@ -56,7 +110,7 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
     size_t seq_len = std::min(logits_seq.size(), target_ids.size());
     
     for (size_t pos = 0; pos < seq_len; ++pos) {
-        // Skip jika pad_mask menunjukkan padding
+        // Skip padding
         if (pos < pad_mask.size() && pad_mask[pos] == 1) continue;
         
         int target = target_ids[pos];
@@ -64,9 +118,19 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
         
         // Log-softmax untuk stabilitas
         auto log_probs = log_softmax(logits_seq[pos]);
+        
         // Negative log likelihood: -log(p_target)
-        auto neg_log = Value::create(-log_probs[target]->data);
-        losses.push_back(neg_log);
+        if (target < (int)log_probs.size()) {
+            auto neg_log = Value::create(-log_probs[target]->data);
+            
+            // Backward: d(-log(p_target))/d(logits)
+            neg_log->_backward = [neg_log, log_probs, target]() {
+                double grad = neg_log->grad;
+                log_probs[target]->grad += -grad;
+            };
+            
+            losses.push_back(neg_log);
+        }
     }
     
     if (losses.empty()) {
@@ -87,6 +151,7 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
             loss->grad += grad;
         }
     };
+    
     return result;
 }
 
@@ -95,20 +160,16 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
 // ============================================================
 AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1, 
              double betas2, double eps, double weight_decay, bool decoupled_wd)
-    : lr(lr),                           // 1. lr (public, di atas params di header)
-      params(std::move(params)),        // 2. params
-      b1(betas1),                       // 3. b1
-      b2(betas2),                       // 4. b2
-      eps(eps),                         // 5. eps
-      wd(weight_decay),                 // 6. wd
-      decoupled_wd(decoupled_wd),       // 7. decoupled_wd
-      m(this->params.size(), 0.0),      // 8. m
-      v(this->params.size(), 0.0),      // 9. v
-      t(0)                              // 10. t
-{
-    // Urutan sesuai dengan deklarasi di optim.h:
-    // lr (public) → params → b1 → b2 → eps → wd → decoupled_wd → m → v → t
-}
+    : lr(lr),
+      params(std::move(params)),
+      b1(betas1),
+      b2(betas2),
+      eps(eps),
+      wd(weight_decay),
+      decoupled_wd(decoupled_wd),
+      m(this->params.size(), 0.0),
+      v(this->params.size(), 0.0),
+      t(0) {}
 
 void AdamW::zero_grad() {
     for (auto& p : params) {
@@ -139,9 +200,6 @@ void AdamW::step() {
         // Decoupled weight decay (AdamW)
         if (decoupled_wd) {
             p->data -= lr * wd * p->data;
-        } else {
-            // L2 regularization (standard Adam)
-            update += lr * wd * p->data;
         }
         
         p->data -= update;
@@ -187,7 +245,7 @@ double WarmupCosineScheduler::step() {
         // Cosine decay
         double progress = static_cast<double>(step_num - warmup) / (total - warmup);
         progress = std::min(1.0, progress);
-        double cosine = 0.5 * (1.0 + std::cos(PI * progress));
+        double cosine = 0.5 * (1.0 + std::cos(M_PI * progress));
         lr = min_lr + (base_lr - min_lr) * cosine;
     }
     
