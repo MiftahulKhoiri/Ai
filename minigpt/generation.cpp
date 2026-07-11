@@ -31,8 +31,9 @@ std::vector<int> sample_top_k(const std::vector<Value::Ptr>& logits, int k, floa
     
     // Buat vector pasangan (indeks, nilai)
     std::vector<std::pair<int, double>> scored;
+    scored.reserve(logits.size());
     for (size_t i = 0; i < logits.size(); ++i) {
-        scored.push_back({i, logits[i]->data});
+        scored.push_back({static_cast<int>(i), logits[i]->data});
     }
     
     // Urutkan berdasarkan nilai (terbesar ke terkecil)
@@ -45,7 +46,7 @@ std::vector<int> sample_top_k(const std::vector<Value::Ptr>& logits, int k, floa
     }
     
     // Apply temperature
-    if (temperature != 1.0) {
+    if (temperature != 1.0 && temperature > 0.0) {
         for (auto& p : scored) {
             p.second = std::exp(p.second / temperature);
         }
@@ -57,7 +58,7 @@ std::vector<int> sample_top_k(const std::vector<Value::Ptr>& logits, int k, floa
         sum += p.second;
     }
     
-    if (sum == 0.0) {
+    if (sum == 0.0 || std::isnan(sum)) {
         // Jika semua nilai 0, return indeks pertama
         return {scored[0].first};
     }
@@ -79,13 +80,14 @@ std::vector<int> sample_top_k(const std::vector<Value::Ptr>& logits, int k, floa
     return {scored.back().first};
 }
 
-void generate(MiniGPT& model, Tokenizer& tokenizer,
-              const std::string& prompt, int max_tokens) {
+void generate(MiniGPT& model, ByteLevelBPETokenizer& tokenizer,
+              const std::string& prompt, int max_tokens,
+              bool add_bos, bool add_eos) {
     std::cout << "Prompt: " << prompt << "\n";
     std::cout << "Generated: ";
 
     // Encode prompt
-    std::vector<int> input_ids = tokenizer.encode(prompt);
+    std::vector<int> input_ids = tokenizer.encode(prompt, add_bos, add_eos);
     if (input_ids.empty()) {
         std::cerr << "Prompt kosong atau tidak bisa di-encode.\n";
         return;
@@ -100,11 +102,8 @@ void generate(MiniGPT& model, Tokenizer& tokenizer,
     // Variabel untuk menyimpan token terakhir yang dihasilkan
     int last_token = input_ids.back();
     
-    // Untuk tracking posisi
-    int pos = 0;
-    
     // Generate token by token
-    for (; pos < max_tokens; ++pos) {
+    for (int pos = 0; pos < max_tokens; ++pos) {
         int token_id;
         
         // Jika masih ada input prompt, gunakan token berikutnya
@@ -123,8 +122,12 @@ void generate(MiniGPT& model, Tokenizer& tokenizer,
             // Ambil token berikutnya (gunakan argmax untuk deterministik)
             int next_token = argmax(logits);
             
-            // Cek EOS
-            if (next_token == tokenizer.eos_token_id()) {
+            // Cek EOS - kita perlu cek apakah tokenizer punya EOS
+            // (tanpa method get_eos_token_id, kita cek dari vocab)
+            // Kita cari token "<eos>" di vocab
+            auto& vocab = tokenizer.get_vocab();
+            auto eos_it = vocab.find("<eos>");
+            if (eos_it != vocab.end() && next_token == eos_it->second) {
                 break;
             }
             
@@ -133,13 +136,6 @@ void generate(MiniGPT& model, Tokenizer& tokenizer,
             
             // Simpan token terakhir
             last_token = next_token;
-        } else {
-            // Untuk prompt, kita hanya forward tanpa generate
-            // (tapi kita tetap perlu menyimpan token terakhir)
-            if (pos == (int)input_ids.size() - 1) {
-                // Token terakhir dari prompt, siapkan untuk generasi berikutnya
-                last_token = token_id;
-            }
         }
     }
     std::cout << "\n";
