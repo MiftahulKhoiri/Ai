@@ -24,19 +24,17 @@ public:
 
     double lr;  // Learning rate (dapat diubah oleh scheduler)
 
-    // ===== TAMBAHKAN GETTER DAN SETTER DI SINI =====
     // Getter (untuk akses baca dari Python/pybind11)
     const std::vector<ValuePtr>& get_params() const { return params; }
     const std::vector<double>& get_m() const { return m; }
     const std::vector<double>& get_v() const { return v; }
     int get_t() const { return t; }
-    
+
     // Setter (untuk deserialisasi dari Python)
     void set_params(const std::vector<ValuePtr>& p) { params = p; }
     void set_m(const std::vector<double>& m_) { m = m_; }
     void set_v(const std::vector<double>& v_) { v = v_; }
     void set_t(int t_) { t = t_; }
-    // ===== AKHIR TAMBAHAN =====
 
 private:
     std::vector<ValuePtr> params;
@@ -55,10 +53,9 @@ public:
 
     double step();  // Mengembalikan learning rate yang baru
 
-    // ===== TAMBAHKAN GETTER DAN SETTER DI SINI =====
+    // Getter dan Setter
     int get_step_num() const { return step_num; }
     void set_step_num(int s) { step_num = s; }
-    // ===== AKHIR TAMBAHAN =====
 
 private:
     AdamW* opt;
