@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# demo.py - Script untuk chat dengan model MiniGPT yang sudah dilatih
+# demo.py - Menggunakan AdvancedGenerator untuk support temperature, top_k, top_p
 
 import sys
 import json
@@ -11,6 +11,8 @@ from minigpt import (
     MiniGPT,
     ByteLevelBPETokenizer,
     generate,
+    AdvancedGenerator,
+    GenerationConfig,
     argmax,
     sample_top_k,
     sample_top_p
@@ -21,13 +23,13 @@ from minigpt import (
 # ============================================================
 MAX_CONTEXT_TURNS = 5
 MAX_NEW_TOKENS = 50
-TEMPERATURE = 0.2          # kecil untuk menghindari byte liar
-TOP_P = 0.9
-TOP_K = 20                 # batasi pilihan token
+TEMPERATURE = 0.8          # <-- Sekarang BISA digunakan!
+TOP_P = 0.9               # <-- Sekarang BISA digunakan!
+TOP_K = 40                # <-- Sekarang BISA digunakan!
 SHOW_REASONING = True
 
 # ============================================================
-# FUNGSI CHECKPOINT LOAD (copy dari training.py)
+# FUNGSI LOAD CHECKPOINT
 # ============================================================
 def load_checkpoint(path: str):
     """Load checkpoint from JSON file"""
@@ -77,6 +79,45 @@ def load_checkpoint(path: str):
     return model, None, None, tokenizer, config, None
 
 # ============================================================
+# FUNGSI GENERATE DENGAN ADVANCED GENERATOR
+# ============================================================
+def generate_with_config(model, tokenizer, prompt: str, 
+                         max_tokens: int = MAX_NEW_TOKENS,
+                         temperature: float = TEMPERATURE,
+                         top_k: int = TOP_K,
+                         top_p: float = TOP_P) -> str:
+    """Generate text using AdvancedGenerator dengan parameter lengkap"""
+    try:
+        # Buat AdvancedGenerator
+        generator = AdvancedGenerator(model, tokenizer)
+        
+        # Set konfigurasi
+        config = GenerationConfig()
+        config.max_length = max_tokens
+        config.temperature = temperature
+        config.top_k = top_k
+        config.top_p = top_p
+        config.num_beams = 1  # Greedy atau sampling
+        config.use_cache = True
+        
+        generator.set_config(config)
+        
+        # Generate
+        results = generator.generate(prompt)
+        
+        if results and len(results) > 0:
+            return results[0]
+        return ""
+        
+    except Exception as e:
+        # Fallback ke generate biasa
+        print(f"⚠️  Advanced generate error: {e}, fallback ke basic generate")
+        result = generate(model, tokenizer, prompt, max_tokens)
+        if isinstance(result, list):
+            return result[0] if result else ""
+        return str(result)
+
+# ============================================================
 # FUNGSI UTILITY
 # ============================================================
 def sanitize_text(text: str) -> str:
@@ -84,33 +125,22 @@ def sanitize_text(text: str) -> str:
     return text.encode('utf-8', errors='replace').decode('utf-8')
 
 def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
-    """Generate with fallback to greedy if error"""
+    """Generate with fallback jika error"""
     for attempt in range(retries + 1):
         try:
+            # Gunakan temperature 0 untuk greedy jika attempt terakhir
             temp = 0.0 if attempt == retries else TEMPERATURE
             
-            # Pilih sampling method
-            if temp > 0:
-                # Gunakan sampling dengan top-k atau top-p
-                # Library kita sudah punya generate dengan parameter default
-                response = generate(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompt=prompt,
-                    max_tokens=MAX_NEW_TOKENS
-                )
-            else:
-                # Greedy (deterministik)
-                response = generate(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompt=prompt,
-                    max_tokens=MAX_NEW_TOKENS
-                )
+            response = generate_with_config(
+                model, 
+                tokenizer, 
+                prompt,
+                max_tokens=MAX_NEW_TOKENS,
+                temperature=temp,
+                top_k=TOP_K if temp > 0 else 0,
+                top_p=TOP_P if temp > 0 else 1.0
+            )
             
-            # Pastikan response adalah string yang valid
-            if isinstance(response, list):
-                response = response[0] if response else ""
             sanitize_text(response)
             return response
             
@@ -126,56 +156,15 @@ def safe_generate(model, tokenizer, prompt: str, retries: int = 2) -> str:
     
     return ""
 
-def format_prompt(history: List[str], user_input: str) -> str:
-    """Format conversation history into prompt"""
-    prompt_parts = []
-    
-    # Ambil context terakhir
-    start_idx = max(0, len(history) - MAX_CONTEXT_TURNS * 2)
-    for msg in history[start_idx:]:
-        prompt_parts.append(msg)
-    
-    # Tambahkan input user
-    prompt_parts.append(f"Pengguna: {user_input}\nAI:")
-    return "\n".join(prompt_parts)
-
-def clean_response(response: str) -> str:
-    """Clean up generated response"""
-    # Hapus bagian "AI:" jika ada
-    if "AI:" in response:
-        response = response.split("AI:")[-1].strip()
-    
-    # Hapus special tokens
-    for cut in ["<bos>", "<eos>", "<pad>"]:
-        if cut in response:
-            response = response.split(cut)[0].strip()
-    
-    # Hapus bagian "Pengguna:" jika muncul
-    if "Pengguna:" in response:
-        response = response.split("Pengguna:")[0].strip()
-    
-    # Jika ada "Jawaban:" dan kita tidak menampilkan reasoning
-    if not SHOW_REASONING and "Jawaban:" in response:
-        final = response.split("Jawaban:")[-1].strip()
-        # Ambil sampai titik atau newline
-        for end_char in [".", "\n"]:
-            if end_char in final:
-                final = final.split(end_char)[0].strip()
-                break
-        response = final
-    
-    return response
-
 # ============================================================
 # FUNGSI CHAT
 # ============================================================
 def chat(model, tokenizer):
-    """Main chat loop"""
+    """Main chat loop dengan AdvancedGenerator"""
     print("\n" + "="*60)
-    print("🤖 MiniGPT Chatbot")
+    print("🤖 MiniGPT Chatbot (Dengan Temperature & Top-K/Top-P)")
     print("="*60)
     print(f"  Vocab size    : {len(tokenizer.get_vocab())}")
-    print(f"  Max context   : {MAX_CONTEXT_TURNS} turns")
     print(f"  Temperature   : {TEMPERATURE}")
     print(f"  Top-K         : {TOP_K}")
     print(f"  Top-P         : {TOP_P}")
@@ -184,7 +173,6 @@ def chat(model, tokenizer):
     print("-"*60)
     
     history = []
-    total_tokens = 0
     
     while True:
         try:
@@ -193,13 +181,17 @@ def chat(model, tokenizer):
             print("\n\n👋 Sampai jumpa!")
             break
         
-        # Cek exit
         if user_input.lower() in ("exit", "keluar", "quit", ""):
             print("👋 Sampai jumpa!")
             break
         
-        # Format prompt
-        prompt = format_prompt(history, user_input)
+        # Format prompt dengan history
+        prompt_parts = []
+        start_idx = max(0, len(history) - MAX_CONTEXT_TURNS * 2)
+        for msg in history[start_idx:]:
+            prompt_parts.append(msg)
+        prompt_parts.append(f"Pengguna: {user_input}\nAI:")
+        prompt = "\n".join(prompt_parts)
         
         # Generate response
         try:
@@ -214,53 +206,64 @@ def chat(model, tokenizer):
             continue
         
         # Clean response
-        response = clean_response(response)
+        if "AI:" in response:
+            response = response.split("AI:")[-1].strip()
+        for cut in ["<bos>", "<eos>"]:
+            if cut in response:
+                response = response.split(cut)[0].strip()
+        if "Pengguna:" in response:
+            response = response.split("Pengguna:")[0].strip()
         
-        # Sanitize untuk keamanan output
-        display_response = sanitize_text(response)
-        if not display_response:
-            display_response = "(Maaf, saya tidak bisa menjawab dengan baik. Coba pertanyaan lain.)"
+        if not SHOW_REASONING and "Jawaban:" in response:
+            final = response.split("Jawaban:")[-1].strip()
+            for end_char in [".", "\n"]:
+                if end_char in final:
+                    final = final.split(end_char)[0].strip()
+                    break
+            response = final
         
-        # Tampilkan response
-        print(f"AI: {display_response}")
+        display = sanitize_text(response)
+        if not display:
+            display = "(Maaf, saya tidak bisa menjawab dengan baik. Coba pertanyaan lain.)"
         
-        # Update history
+        print(f"AI: {display}")
+        
         history.append(f"Pengguna: {user_input}")
         history.append(f"AI: {response}")
-        
-        # Update token stats (approximate)
-        total_tokens += len(prompt.split()) + len(response.split())
-        
-        # Limit history
-        if len(history) > MAX_CONTEXT_TURNS * 4:
-            history = history[-MAX_CONTEXT_TURNS * 4:]
 
 # ============================================================
-# FUNGSI TEST GENERATE
+# TEST GENERATE
 # ============================================================
 def test_generate(model, tokenizer):
-    """Test generation with sample prompts"""
+    """Test generation dengan berbagai parameter"""
     prompts = ["Halo", "Apa kabar", "Saya suka"]
+    
     print("\n" + "="*60)
-    print("🧪 TEST GENERATE")
+    print("🧪 TEST GENERATE (Dengan Temperature & Top-K/Top-P)")
     print("="*60)
     
-    for i, p in enumerate(prompts, 1):
-        try:
-            print(f"\n[{i}] Prompt: {p}")
-            result = generate(model, tokenizer, p, max_tokens=20)
-            if isinstance(result, list):
-                result = result[0] if result else ""
-            print(f"    Hasil: {sanitize_text(result)}")
-        except Exception as e:
-            print(f"    ❌ Error: {e}")
-    print()
+    # Test dengan berbagai temperature
+    for temp in [0.0, 0.5, 1.0]:
+        print(f"\n🔥 Temperature = {temp}")
+        for i, p in enumerate(prompts, 1):
+            try:
+                result = generate_with_config(
+                    model, tokenizer, p,
+                    max_tokens=20,
+                    temperature=temp,
+                    top_k=TOP_K if temp > 0 else 0,
+                    top_p=TOP_P if temp > 0 else 1.0
+                )
+                print(f"  [{i}] Prompt: {p}")
+                print(f"      Hasil: {sanitize_text(result)}")
+            except Exception as e:
+                print(f"      ❌ Error: {e}")
+        print()
 
 # ============================================================
 # MAIN
 # ============================================================
 def main():
-    # Parse arguments
     if len(sys.argv) < 2:
         print("Penggunaan: python3 demo.py <checkpoint.json>")
         print("Contoh: python3 demo.py Ai_1.json")
@@ -268,12 +271,10 @@ def main():
     
     checkpoint_path = sys.argv[1]
     
-    # Check file exists
     if not os.path.exists(checkpoint_path):
         print(f"❌ File checkpoint '{checkpoint_path}' tidak ditemukan.")
         return
     
-    # Load model
     print("="*60)
     print("📦 MEMUAT MODEL")
     print("="*60)
@@ -282,20 +283,12 @@ def main():
         model, _, _, tokenizer, config, _ = load_checkpoint(checkpoint_path)
         print(f"✅ Model berhasil dimuat dari: {checkpoint_path}")
         
-        # Show config
         if config:
             print(f"   Config: {config}")
         
-        # Test generate
         test_generate(model, tokenizer)
-        
-        # Start chat
         chat(model, tokenizer)
         
-    except json.JSONDecodeError as e:
-        print(f"❌ Error: File checkpoint corrupt: {e}")
-    except KeyError as e:
-        print(f"❌ Error: Missing key in checkpoint: {e}")
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
