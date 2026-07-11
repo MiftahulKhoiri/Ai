@@ -4,8 +4,5 @@
 #include <vector>
 #include <memory>
 
-// Fungsi aktivasi
+// GELU activation
 ValuePtr gelu(const ValuePtr& x);
-
-// Fungsi utility lainnya (jika ada)
-// ...
