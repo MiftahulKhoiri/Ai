@@ -1,85 +1,55 @@
-#include "generation.h"
-#include <algorithm>
-#include <numeric>
-#include <random>
+// generation.cpp
+#include "model.h"
+#include "tokenizer.h"
+#include <iostream>
+#include <vector>
 
-int sample_from_logits(const std::vector<ValuePtr>& logits, double temperature, int top_k, double top_p) {
-    std::vector<double> scaled;
-    for (auto& v : logits)
-        scaled.push_back(v->data / std::max(temperature, 1e-6));
+void generate(MiniGPT& model, Tokenizer& tokenizer,
+              const std::string& prompt, int max_tokens) {
+    std::cout << "Prompt: " << prompt << "\n";
 
-    double m = *std::max_element(scaled.begin(), scaled.end());
-    std::vector<double> exps;
-    for (auto& s : scaled)
-        exps.push_back(std::exp(s - m));
-    double sum_e = std::accumulate(exps.begin(), exps.end(), 0.0);
-    std::vector<double> probs(exps.size());
-    for (size_t i = 0; i < exps.size(); ++i)
-        probs[i] = exps[i] / sum_e;
-
-    // top-k
-    if (top_k > 0 && top_k < (int)probs.size()) {
-        std::vector<size_t> idx(probs.size());
-        std::iota(idx.begin(), idx.end(), 0);
-        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return probs[a] > probs[b]; });
-        for (int i = top_k; i < (int)idx.size(); ++i)
-            probs[idx[i]] = 0.0;
+    // Encode prompt
+    std::vector<int> input_ids = tokenizer.encode(prompt);
+    if (input_ids.empty()) {
+        std::cerr << "Prompt kosong.\n";
+        return;
     }
 
-    // top-p (nucleus)
-    if (top_p > 0.0 && top_p < 1.0) {
-        std::vector<size_t> idx(probs.size());
-        std::iota(idx.begin(), idx.end(), 0);
-        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return probs[a] > probs[b]; });
-        double cum = 0.0;
-        for (size_t i = 0; i < idx.size(); ++i) {
-            cum += probs[idx[i]];
-            if (cum >= top_p) {
-                for (size_t j = i+1; j < idx.size(); ++j)
-                    probs[idx[j]] = 0.0;
-                break;
-            }
-        }
-    }
-
-    double sum_p = std::accumulate(probs.begin(), probs.end(), 0.0);
-    if (sum_p <= 0)
-        return std::max_element(scaled.begin(), scaled.end()) - scaled.begin();
-
-    for (auto& p : probs) p /= sum_p;
-
-    static std::mt19937 rng(std::random_device{}());
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
-    double r = dist(rng);
-    double cum = 0.0;
-    for (size_t i = 0; i < probs.size(); ++i) {
-        cum += probs[i];
-        if (r <= cum) return i;
-    }
-    return probs.size() - 1;
-}
-
-std::string generate(MiniGPT& model, ByteLevelBPETokenizer& tok, const std::string& prompt,
-                     int max_new_tokens, double temperature, int top_k, double top_p) {
+    // Set model ke mode evaluasi (non-training)
     model.set_training(false);
+
+    // Inisialisasi cache untuk incremental generation
     model.init_cache();
-    auto ids = tok.encode(prompt, true, false);
-    // ===== PERUBAHAN: tok.vocab → tok.get_vocab() =====
-    int eos_id = tok.get_vocab().at("<eos>");
 
-    std::vector<ValuePtr> logits;
-    for (size_t pos = 0; pos < ids.size(); ++pos)
-        logits = model.forward_incremental(ids[pos], pos);
+    // Generate token by token
+    for (int pos = 0; pos < max_tokens; ++pos) {
+        // Jika masih ada input prompt, gunakan token berikutnya
+        // Jika sudah habis, gunakan token terakhir yang digenerate
+        int token_id;
+        if (pos < (int)input_ids.size()) {
+            token_id = input_ids[pos];
+        } else {
+            // Gunakan token yang terakhir dihasilkan (disimpan di suatu variabel)
+            token_id = last_token; // kita perlu simpan
+        }
 
-    for (int _ = 0; _ < max_new_tokens; ++_) {
-        int next_id = sample_from_logits(logits, temperature, top_k, top_p);
-        ids.push_back(next_id);
-        if (next_id == eos_id) break;
-        int pos = ids.size() - 1;
-        if (pos >= model.max_len) break;
-        logits = model.forward_incremental(next_id, pos);
+        // Forward incremental
+        std::vector<ValuePtr> logits = model.forward_incremental(token_id, pos);
+
+        // Ambil argmax dari logits (logits adalah ValuePtr, ambil data dan cari indeks max)
+        // Karena logits adalah vector<ValuePtr> untuk satu token? Sesuai signature:
+        // std::vector<ValuePtr> forward_incremental(int token_id, int pos);
+        // Ini mengembalikan logits untuk token saat ini (shape [vocab_size])
+        // Cari indeks dengan nilai terbesar
+        int next_token = argmax(logits); // fungsi sederhana
+
+        // Cetak token
+        std::cout << tokenizer.decode({next_token}) << std::flush;
+
+        // Simpan token terakhir
+        last_token = next_token;
+        // Jika token EOS, berhenti
+        if (next_token == tokenizer.eos_token_id()) break;
     }
-
-    model.set_training(true);
-    return tok.decode(ids);
+    std::cout << "\n";
 }
