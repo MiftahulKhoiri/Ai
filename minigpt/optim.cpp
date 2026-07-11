@@ -245,7 +245,7 @@ double WarmupCosineScheduler::step() {
         // Cosine decay
         double progress = static_cast<double>(step_num - warmup) / (total - warmup);
         progress = std::min(1.0, progress);
-        double cosine = 0.5 * (1.0 + std::cos(M_PI * progress));
+        double cosine = 0.5 * (1.0 + std::cos(PI * progress));
         lr = min_lr + (base_lr - min_lr) * cosine;
     }
     
