@@ -1,6 +1,7 @@
 // layers.h
 #pragma once
 #include "value.h"
+#include "utils.h"  // TAMBAHKAN INI
 #include <vector>
 #include <memory>
 
