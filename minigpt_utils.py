@@ -10,7 +10,7 @@ from typing import List, Tuple, Dict, Any, Optional
 
 from minigpt import (
     MiniGPT, 
-    ByteLevelBPETokenizer, 
+    Tokenizer, 
     AdamW, 
     WarmupCosineScheduler,
     cross_entropy_loss,
