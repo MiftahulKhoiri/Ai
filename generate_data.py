@@ -15,7 +15,7 @@ from datetime import datetime
 # KONFIGURASI
 # ============================================================
 CONFIG = {
-    'total_data': 200,           # Total data yang dihasilkan
+    'total_data': 2000,           # Total data yang dihasilkan
     'output_file': 'data.json',    # Nama file output
     'seed': 42,                    # Random seed untuk reproducibility
     'min_langkah': 2,              # Minimum langkah reasoning
