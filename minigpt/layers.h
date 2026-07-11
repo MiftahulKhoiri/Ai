@@ -1,108 +1,151 @@
+// layers.h
 #pragma once
 #include "value.h"
 #include <vector>
 #include <memory>
-#include <random>
 
 // ============================================================
-// DROPOUT
+// HELPER FUNCTIONS
 // ============================================================
-struct Dropout {
-    double p;
-    bool training;
-    std::mt19937 rng;
-    Dropout(double p = 0.1);
-    std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
-};
 
-// ============================================================
-// LINEAR
-// ============================================================
-struct Linear {
-    std::vector<std::vector<ValuePtr>> W;
-    std::vector<ValuePtr> b;
-    bool use_bias;
+std::vector<ValuePtr> linear_forward(
+    const std::vector<ValuePtr>& x,
+    const std::vector<ValuePtr>& weight,
+    const std::vector<ValuePtr>& bias);
 
-    Linear(int n_in, int n_out, bool bias = true);
-    std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
-    std::vector<ValuePtr> parameters();
-};
+std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x);
+
+double random_normal(double mean, double stddev);
 
 // ============================================================
 // EMBEDDING
 // ============================================================
-struct Embedding {
-    std::vector<std::vector<ValuePtr>> table;
-    Embedding(int vocab_size, int d_model, double scale = 0.02);
-    std::vector<ValuePtr> forward(int idx);
-    std::vector<ValuePtr> parameters();
+
+class Embedding {
+public:
+    std::vector<ValuePtr> weight;
+    int vocab_size;
+    int d_model;
+    
+    Embedding(int vocab_size, int d_model);
+    std::vector<ValuePtr> forward(const std::vector<int>& ids);
 };
 
 // ============================================================
 // POSITIONAL EMBEDDING
 // ============================================================
-struct PositionalEmbedding {
-    std::vector<std::vector<ValuePtr>> table;
-    PositionalEmbedding(int max_len, int d_model, double scale = 0.02);
-    std::vector<ValuePtr> forward(int pos);
-    std::vector<ValuePtr> parameters();
+
+class PositionalEmbedding {
+public:
+    std::vector<std::vector<ValuePtr>> pos_encoding;
+    int max_len;
+    int d_model;
+    
+    PositionalEmbedding(int max_len, int d_model);
+    std::vector<ValuePtr> forward(int seq_len);
 };
 
 // ============================================================
-// LAYER NORMALIZATION
+// DROPOUT
 // ============================================================
-struct LayerNorm {
-    std::vector<ValuePtr> gamma, beta;
-    double eps;
-    LayerNorm(int dim, double eps = 1e-5);
+
+class Dropout {
+public:
+    double p;
+    bool training;
+    
+    Dropout(double p = 0.1);
     std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
-    std::vector<ValuePtr> parameters();
+};
+
+// ============================================================
+// LAYER NORM
+// ============================================================
+
+class LayerNorm {
+public:
+    int d_model;
+    double eps;
+    ValuePtr weight;
+    ValuePtr bias;
+    
+    LayerNorm(int d_model, double eps = 1e-5);
+    std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
 };
 
 // ============================================================
 // MULTI-HEAD SELF ATTENTION
 // ============================================================
-struct MultiHeadSelfAttention {
-    int d_model, n_heads, d_head;
-    Linear Wq, Wk, Wv, Wo;
-    Dropout drop;
 
-    MultiHeadSelfAttention(int d_model, int n_heads, double dropout = 0.1);
-    std::vector<std::vector<ValuePtr>> forward(const std::vector<std::vector<ValuePtr>>& X,
-                                               const std::vector<int>& pad_mask);
-    std::vector<ValuePtr> forward_incremental(const std::vector<ValuePtr>& x,
-                                             std::vector<std::vector<ValuePtr>>& K_cache,
-                                             std::vector<std::vector<ValuePtr>>& V_cache);
-    std::vector<ValuePtr> parameters();
-    void set_training(bool mode);
+class MultiHeadSelfAttention {
+public:
+    int d_model;
+    int n_heads;
+    double dropout_p;
+    int max_len;
+    
+    std::vector<ValuePtr> weight_q, weight_k, weight_v, weight_o;
+    std::vector<ValuePtr> bias_q, bias_k, bias_v, bias_o;
+    Dropout attn_dropout;
+    
+    MultiHeadSelfAttention(int d_model, int n_heads, double dropout = 0.1, int max_len = 1024);
+    std::vector<std::vector<ValuePtr>> forward(
+        const std::vector<std::vector<ValuePtr>>& x,
+        const std::vector<int>& pad_mask = {});
 };
 
 // ============================================================
-// FEED-FORWARD
+// FEED FORWARD
 // ============================================================
-struct FeedForward {
-    Linear fc1, fc2;
-    Dropout drop;
+
+class FeedForward {
+public:
+    int d_model;
+    int d_ff;
+    double dropout_p;
+    
+    std::vector<ValuePtr> w1, w2;
+    std::vector<ValuePtr> b1, b2;
+    Dropout ff_dropout;
+    
     FeedForward(int d_model, int d_ff, double dropout = 0.1);
     std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
-    std::vector<ValuePtr> parameters();
-    void set_training(bool mode);
 };
 
 // ============================================================
 // TRANSFORMER BLOCK
 // ============================================================
-struct TransformerBlock {
-    LayerNorm ln1, ln2;
+
+class TransformerBlock {
+public:
+    int d_model;
+    int n_heads;
+    int d_ff;
+    double dropout_p;
+    int max_len;
+    
     MultiHeadSelfAttention attn;
     FeedForward ff;
+    LayerNorm ln1, ln2;
+    Dropout attn_dropout;
+    
+    TransformerBlock(int d_model, int n_heads, int d_ff, double dropout = 0.1, int max_len = 1024);
+    std::vector<std::vector<ValuePtr>> forward(
+        const std::vector<std::vector<ValuePtr>>& x,
+        const std::vector<int>& pad_mask = {});
+};
 
-    TransformerBlock(int d_model, int n_heads, int d_ff, double dropout = 0.1);
-    std::vector<std::vector<ValuePtr>> forward(const std::vector<std::vector<ValuePtr>>& X,
-                                               const std::vector<int>& pad_mask);
-    std::vector<ValuePtr> forward_incremental(const std::vector<ValuePtr>& x,
-                                             std::vector<std::vector<ValuePtr>>& K_cache,
-                                             std::vector<std::vector<ValuePtr>>& V_cache);
-    std::vector<ValuePtr> parameters();
-    void set_training(bool mode);
+// ============================================================
+// LINEAR (Final Projection)
+// ============================================================
+
+class Linear {
+public:
+    int in_features;
+    int out_features;
+    std::vector<ValuePtr> weight;
+    std::vector<ValuePtr> bias;
+    
+    Linear(int in_features, int out_features);
+    std::vector<ValuePtr> forward(const std::vector<ValuePtr>& x);
 };
