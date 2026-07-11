@@ -31,8 +31,8 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     double log_sum = std::log(sum);
     for (size_t i = 0; i < x.size(); ++i) {
         result.push_back(Value::create(x[i]->data - max_val - log_sum));
-        // Backward untuk log_softmax
-        result.back()->_backward = [result, x, i, sum]() {
+        // Backward untuk log_softmax - CAPTURE max_val!
+        result.back()->_backward = [result, x, i, sum, max_val]() {
             double grad = result[i]->grad;
             for (size_t j = 0; j < x.size(); ++j) {
                 double delta = (i == j) ? 1.0 : 0.0;
@@ -97,8 +97,8 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
 // ============================================================
 AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1, 
              double betas2, double eps, double weight_decay, bool decoupled_wd)
-    : params(std::move(params)),
-      lr(lr),
+    : lr(lr),                           // urutan sesuai deklarasi di header optim.h
+      params(std::move(params)),        // params setelah lr
       b1(betas1),
       b2(betas2),
       eps(eps),
@@ -108,7 +108,11 @@ AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1,
       v(this->params.size(), 0.0),
       t(0)
 {
-    // Semua inisialisasi sudah di member initializer list
+    // Perhatikan: urutan inisialisasi mengikuti urutan deklarasi di header:
+    // 1. lr (public, di atas params di header)
+    // 2. params (private, setelah lr)
+    // 3. b1, b2, eps, wd, decoupled_wd
+    // 4. m, v, t
 }
 
 void AdamW::zero_grad() {
