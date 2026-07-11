@@ -12,13 +12,11 @@
 std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
     
-    // Cari max untuk stabilitas numerik
     double max_val = x[0]->data;
     for (const auto& v : x) {
         if (v->data > max_val) max_val = v->data;
     }
     
-    // Hitung exp dan sum
     std::vector<ValuePtr> exps;
     exps.reserve(x.size());
     double sum = 0.0;
@@ -29,7 +27,6 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
         sum += exp_val;
     }
     
-    // Normalisasi
     std::vector<ValuePtr> result;
     result.reserve(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
@@ -38,6 +35,7 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
     }
     
     // Backward untuk softmax
+    // JANGAN menimpa _prev! Biarkan _prev dari operasi '/'
     for (size_t i = 0; i < x.size(); ++i) {
         result[i]->_backward = [result, x, i]() {
             double grad = result[i]->grad;
@@ -48,8 +46,7 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * p_i * (delta - p_j);
             }
         };
-        // === INI PENTING: hubungkan _prev agar backward berjalan ===
-        result[i]->_prev = {x[i]};
+        // HAPUS baris ini: result[i]->_prev = {x[i]};
     }
     
     return result;
@@ -87,8 +84,8 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
                 x[j]->grad += grad * (delta - softmax_j);
             }
         };
-        // === INI PENTING: hubungkan _prev agar backward berjalan ===
-        v->_prev = {x[i]};
+        // HAPUS baris ini: v->_prev = {x[i]};
+        // Biarkan _prev dari operasi '-' dan '-' (x[i] - max_val - log_sum)
         
         result.push_back(v);
     }
@@ -119,9 +116,7 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
         auto log_probs = log_softmax(logits_seq[pos]);
         
         if (target < (int)log_probs.size()) {
-            // Negative log likelihood: -log(p_target)
             auto neg_log = Value::create(-log_probs[target]->data);
-            // === INI PENTING: hubungkan _prev agar backward berjalan ===
             neg_log->_prev = {log_probs[target]};
             neg_log->_backward = [neg_log, log_probs, target]() {
                 double grad = neg_log->grad;
@@ -135,7 +130,6 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
         return Value::create(0.0);
     }
     
-    // Average loss
     double sum = 0.0;
     for (const auto& loss : losses) {
         sum += loss->data;
@@ -143,7 +137,6 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
     double avg = sum / losses.size();
     
     auto result = Value::create(avg);
-    // === INI PENTING: hubungkan _prev ke semua losses ===
     result->_prev = losses;
     result->_backward = [result, losses]() {
         double grad = result->grad / losses.size();
