@@ -1,5 +1,6 @@
 // simd.h
 #pragma once
+#include <cstdint>   // TAMBAHKAN
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
