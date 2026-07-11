@@ -5,7 +5,7 @@
 #include "value.h"
 #include <vector>
 #include <memory>
-#include <cmath>  // TAMBAHKAN INI
+#include <cmath>
 
 // Forward declarations
 ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
@@ -27,15 +27,13 @@ public:
     void step();
     void zero_grad();
 
-    double lr;  // Learning rate (dapat diubah oleh scheduler)
+    double lr;
 
-    // Getter (untuk akses baca dari Python/pybind11)
     const std::vector<ValuePtr>& get_params() const { return params; }
     const std::vector<double>& get_m() const { return m; }
     const std::vector<double>& get_v() const { return v; }
     int get_t() const { return t; }
 
-    // Setter (untuk deserialisasi dari Python)
     void set_params(const std::vector<ValuePtr>& p) { params = p; }
     void set_m(const std::vector<double>& m_) { m = m_; }
     void set_v(const std::vector<double>& v_) { v = v_; }
@@ -56,9 +54,8 @@ public:
     WarmupCosineScheduler(AdamW* opt, int warmup_steps, int total_steps, 
                           double base_lr = 1e-3, double min_lr = 1e-5);
 
-    double step();  // Mengembalikan learning rate yang baru
+    double step();
 
-    // Getter dan Setter
     int get_step_num() const { return step_num; }
     void set_step_num(int s) { step_num = s; }
 
@@ -67,7 +64,7 @@ private:
     int warmup, total, step_num;
     double base_lr, min_lr;
 
-    // Gunakan nama yang berbeda agar tidak bentrok dengan M_PI dari cmath
+    // Gunakan PI (bukan M_PI) untuk menghindari konflik
     static constexpr double PI = 3.14159265358979323846;
 };
 
