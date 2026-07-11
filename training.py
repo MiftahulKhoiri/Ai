@@ -1,23 +1,39 @@
+#!/usr/bin/env python3
+# training.py - Script untuk training MiniGPT dengan dataset JSON
+
 import sys
 import json
 import os
 import glob
 import time
-from memory_monitor import monitor_memory
-from minigpt import MiniGPT, ByteLevelBPETokenizer, AdamW, WarmupCosineScheduler, generate
-from minigpt_utils import build_dataset, iter_batches, train_batch, save_checkpoint, load_checkpoint
+import random
+import math
+from typing import List, Tuple, Dict, Any
+
+# Import dari library minigpt yang sudah kita buat
+from minigpt import (
+    MiniGPT, 
+    ByteLevelBPETokenizer, 
+    AdamW, 
+    WarmupCosineScheduler, 
+    generate,
+    cross_entropy_loss,
+    clip_grad_norm,
+    argmax,
+    Value
+)
 
 # ============================================================
-# KONFIGURASI TRAINING (dapat disesuaikan)
+# KONFIGURASI TRAINING
 # ============================================================
 SEQ_LEN = 16
-BATCH_SIZE = 2          # <-- TURUNKAN dari 8 ke 2 agar hemat RAM
-EPOCHS = 50             # <-- NAIKKAN dari 1 ke 50 untuk pembelajaran lebih lama
-PATIENCE = 3            # <-- TAMBAHKAN: Early Stopping jika loss tidak membaik 5 epoch berturut-turut
+BATCH_SIZE = 2
+EPOCHS = 50
+PATIENCE = 3
 LR = 0.01
 WARMUP_STEPS = 30
-TOTAL_STEPS = 200          # digunakan saat training baru
-ADDITIONAL_STEPS = 100     # jika resume, tambah steps sebanyak ini
+TOTAL_STEPS = 200
+ADDITIONAL_STEPS = 100
 MAX_GRAD_NORM = 1.0
 D_MODEL = 4
 N_HEADS = 2
@@ -28,10 +44,16 @@ DROPOUT = 0.1
 VOCAB_SIZE = 200
 
 # ============================================================
-# FUNGSI MEMORI (tanpa psutil, untuk Termux/Android)
+# FUNGSI MEMORI (untuk monitoring)
 # ============================================================
 def get_memory_info():
-    mem_info = {'process_mb': 0.0, 'system_total_mb': 0.0, 'system_available_mb': 0.0, 'system_percent': 0.0}
+    """Membaca informasi memori dari /proc (untuk Linux/Android)"""
+    mem_info = {
+        'process_mb': 0.0,
+        'system_total_mb': 0.0,
+        'system_available_mb': 0.0,
+        'system_percent': 0.0
+    }
     try:
         with open('/proc/self/status', 'r') as f:
             for line in f:
@@ -41,19 +63,25 @@ def get_memory_info():
         total_kb = available_kb = 0
         with open('/proc/meminfo', 'r') as f:
             for line in f:
-                if line.startswith('MemTotal:'): total_kb = int(line.split()[1])
-                elif line.startswith('MemAvailable:'): available_kb = int(line.split()[1])
-                elif line.startswith('MemFree:') and available_kb == 0: available_kb = int(line.split()[1])
+                if line.startswith('MemTotal:'):
+                    total_kb = int(line.split()[1])
+                elif line.startswith('MemAvailable:'):
+                    available_kb = int(line.split()[1])
+                elif line.startswith('MemFree:') and available_kb == 0:
+                    available_kb = int(line.split()[1])
         if total_kb > 0:
             mem_info['system_total_mb'] = total_kb / 1024.0
             mem_info['system_available_mb'] = available_kb / 1024.0
             mem_info['system_percent'] = ((total_kb - available_kb) / total_kb) * 100.0
-    except: pass
+    except:
+        pass
     return mem_info
 
 def print_memory_info(label="", show_system=True):
+    """Print memory usage information"""
     mem = get_memory_info()
-    if label: print(f"\n{'='*60}\n📊 MEMORI: {label}\n{'='*60}")
+    if label:
+        print(f"\n{'='*60}\n📊 MEMORI: {label}\n{'='*60}")
     print(f"  🔹 RAM Proses     : {mem['process_mb']:.1f} MB" if mem['process_mb'] > 0 else "  🔹 RAM Proses     : tidak dapat dibaca")
     if show_system and mem['system_total_mb'] > 0:
         total_gb = mem['system_total_mb'] / 1024
@@ -61,23 +89,17 @@ def print_memory_info(label="", show_system=True):
         used_gb = total_gb - avail_gb
         print(f"  🔹 RAM Sistem     : {used_gb:.1f} GB / {total_gb:.1f} GB ({mem['system_percent']:.1f}%)")
         print(f"  🔹 RAM Tersedia   : {avail_gb:.1f} GB")
-    elif show_system: print(f"  🔹 RAM Sistem     : tidak dapat dibaca")
+    elif show_system:
+        print(f"  🔹 RAM Sistem     : tidak dapat dibaca")
 
 def get_process_memory_mb():
+    """Get current process memory in MB"""
     return get_memory_info()['process_mb']
 
-def get_next_version():
-    files = glob.glob("Ai_*.json")
-    max_ver = 0
-    for f in files:
-        try:
-            ver = int(f.split("Ai_")[1].split(".json")[0])
-            if ver > max_ver: max_ver = ver
-        except: pass
-    return max_ver + 1
-
 def format_time(seconds):
-    if seconds < 60: return f"{seconds:.1f} detik"
+    """Format time in human readable format"""
+    if seconds < 60:
+        return f"{seconds:.1f} detik"
     elif seconds < 3600:
         m, s = divmod(int(seconds), 60)
         return f"{m} menit {s} detik"
@@ -86,19 +108,237 @@ def format_time(seconds):
         m, s = divmod(r, 60)
         return f"{h} jam {m} menit {s} detik"
 
+def get_next_version():
+    """Get next version number for checkpoint"""
+    files = glob.glob("Ai_*.json")
+    max_ver = 0
+    for f in files:
+        try:
+            ver = int(f.split("Ai_")[1].split(".json")[0])
+            if ver > max_ver:
+                max_ver = ver
+        except:
+            pass
+    return max_ver + 1
+
 def estimate_model_size(vocab_size, d_model, n_layers, n_heads, d_ff, max_len):
+    """Estimate model size in parameters"""
     emb = vocab_size * d_model + max_len * d_model
     attn = 4 * d_model * d_model
     ffn = 2 * d_model * d_ff + d_ff + d_model
     ln = 4 * d_model
     return emb + n_layers * (attn + ffn + ln) + 2 * d_model + d_model * vocab_size
 
+# ============================================================
+# FUNGSI DATASET
+# ============================================================
+def build_dataset(tokenized: List[List[int]], seq_len: int, pad_id: int) -> List[List[int]]:
+    """Build dataset from tokenized sentences"""
+    examples = []
+    for tokens in tokenized:
+        if len(tokens) < 2:
+            continue
+        # Jika lebih pendek dari seq_len, padding
+        if len(tokens) < seq_len:
+            padded = tokens + [pad_id] * (seq_len - len(tokens))
+            examples.append(padded)
+        else:
+            # Sliding window
+            for i in range(0, len(tokens) - seq_len + 1, seq_len // 2):
+                seq = tokens[i:i + seq_len]
+                if len(seq) == seq_len:
+                    examples.append(seq)
+    return examples
+
+def iter_batches(examples: List[List[int]], batch_size: int, shuffle: bool = True):
+    """Iterate over batches"""
+    if shuffle:
+        indices = list(range(len(examples)))
+        random.shuffle(indices)
+    else:
+        indices = list(range(len(examples)))
+    
+    for i in range(0, len(indices), batch_size):
+        batch_indices = indices[i:i + batch_size]
+        batch = [examples[idx] for idx in batch_indices if idx < len(examples)]
+        if batch:
+            yield batch
+
+def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
+    """Train on a single batch"""
+    total_loss = 0.0
+    n_samples = 0
+    
+    # Zero grad
+    optimizer.zero_grad()
+    
+    for seq in batch:
+        if len(seq) < 2:
+            continue
+        
+        input_ids = seq[:-1]
+        target_ids = seq[1:]
+        
+        # Forward
+        logits = model.forward(input_ids)
+        
+        # Compute loss
+        loss = cross_entropy_loss(logits, target_ids, [])
+        
+        # Accumulate loss (backward akan dijalankan setelah semua batch)
+        if n_samples == 0:
+            total_loss_value = loss
+        else:
+            # Kita hanya bisa backward satu loss karena autograd
+            # Simpan loss terakhir
+            total_loss_value = loss
+        
+        n_samples += 1
+    
+    # Backward pada loss terakhir
+    if n_samples > 0:
+        total_loss_value.backward()
+        
+        # Clip gradient
+        params = model.parameters()
+        grad_norm = clip_grad_norm(params, max_grad_norm)
+        
+        # Step optimizer
+        optimizer.step()
+        
+        # Step scheduler
+        if scheduler:
+            scheduler.step()
+        
+        return total_loss_value.data, grad_norm
+    
+    return 0.0, 0.0
+
+# ============================================================
+# FUNGSI SAVE/LOAD CHECKPOINT
+# ============================================================
+def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None, 
+                    config=None, total_steps=0, epoch=0, loss=0.0):
+    """Save checkpoint to JSON file"""
+    checkpoint = {
+        'config': config or {},
+        'total_steps': total_steps,
+        'epoch': epoch,
+        'loss': loss,
+        'vocab': tokenizer.get_vocab() if tokenizer else {},
+        'inv_vocab': {str(k): v for k, v in tokenizer.get_inv_vocab().items()} if tokenizer else {},
+        'merge_order': tokenizer.get_merge_order() if tokenizer else [],
+        'params': [],
+        'm': [],
+        'v': [],
+        't': 0,
+        'lr': 0
+    }
+    
+    # Save model parameters
+    if model:
+        params = model.parameters()
+        checkpoint['params'] = [p.data for p in params]
+    
+    # Save optimizer state
+    if optimizer:
+        checkpoint['m'] = optimizer.get_m()
+        checkpoint['v'] = optimizer.get_v()
+        checkpoint['t'] = optimizer.get_t()
+        checkpoint['lr'] = optimizer.lr
+    
+    # Add step if from scheduler
+    if scheduler:
+        checkpoint['scheduler_step'] = scheduler.get_step_num()
+    
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(checkpoint, f, indent=2, ensure_ascii=False)
+
+def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
+    """Load checkpoint from JSON file"""
+    with open(path, 'r', encoding='utf-8') as f:
+        checkpoint = json.load(f)
+    
+    # Restore tokenizer
+    tokenizer = ByteLevelBPETokenizer()
+    if 'vocab' in checkpoint and checkpoint['vocab']:
+        vocab = {k: v for k, v in checkpoint['vocab'].items()}
+        inv_vocab = {int(k): v for k, v in checkpoint['inv_vocab'].items()}
+        merge_order = [tuple(pair) for pair in checkpoint.get('merge_order', [])]
+        tokenizer.set_vocab(vocab)
+        tokenizer.set_inv_vocab(inv_vocab)
+        tokenizer.set_merge_order(merge_order)
+    
+    # Restore config
+    config = checkpoint.get('config', {})
+    vocab_size = config.get('vocab_size', len(tokenizer.get_vocab()))
+    d_model = config.get('d_model', D_MODEL)
+    n_heads = config.get('n_heads', N_HEADS)
+    n_layers = config.get('n_layers', N_LAYERS)
+    d_ff = config.get('d_ff', D_FF)
+    max_len = config.get('max_len', MAX_LEN)
+    dropout = config.get('dropout', DROPOUT)
+    
+    # Create model
+    model = MiniGPT(
+        vocab_size=vocab_size,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        d_ff=d_ff,
+        max_len=max_len,
+        dropout=dropout
+    )
+    
+    # Restore model parameters
+    if 'params' in checkpoint and checkpoint['params']:
+        params = model.parameters()
+        for i, p in enumerate(params):
+            if i < len(checkpoint['params']):
+                p.data = checkpoint['params'][i]
+    
+    # Create optimizer
+    params = model.parameters()
+    lr = checkpoint.get('lr', LR)
+    optimizer = AdamW(params, lr=lr, weight_decay=0.01)
+    
+    # Restore optimizer state
+    if 'm' in checkpoint and checkpoint['m']:
+        optimizer.set_m(checkpoint['m'])
+    if 'v' in checkpoint and checkpoint['v']:
+        optimizer.set_v(checkpoint['v'])
+    if 't' in checkpoint:
+        optimizer.set_t(checkpoint['t'])
+    if 'lr' in checkpoint:
+        optimizer.lr = checkpoint['lr']
+    
+    # Calculate total steps
+    scheduler_step = checkpoint.get('scheduler_step', 0)
+    total_steps = scheduler_step + additional_steps
+    
+    # Create scheduler
+    scheduler = WarmupCosineScheduler(
+        optimizer,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
+        base_lr=lr,
+        min_lr=min_lr
+    )
+    scheduler.set_step_num(scheduler_step)
+    
+    print(f"✅ Checkpoint loaded: step={scheduler_step}, total_steps={total_steps}")
+    
+    return model, optimizer, scheduler, tokenizer, config, total_steps
+
 def test_generate(model, tokenizer):
+    """Test generation with sample prompts"""
     prompts = ["Halo", "Apa kabar", "Saya suka"]
     print("\n" + "="*60 + "\n🧪 TES GENERATE\n" + "="*60)
     for i, p in enumerate(prompts, 1):
         try:
-            result = generate(model, tokenizer, p, max_new_tokens=20)
+            result = generate(model, tokenizer, p, max_tokens=20)
+            if isinstance(result, list):
+                result = result[0] if result else ""
             print(f"  [{i}] Prompt  : {p}\n      Hasil   : {result}")
         except Exception as e:
             print(f"  [{i}] Prompt  : {p}\n      ❌ Error : {e}")
@@ -132,7 +372,6 @@ def main():
     print("\n" + "="*60)
     print("📂 1. MEMUAT DATA")
     print("="*60)
-    monitor_memory()
     with open(data_file, "r", encoding="utf-8") as f:
         sentences = json.load(f)
     total_chars = sum(len(s) for s in sentences)
@@ -143,9 +382,7 @@ def main():
     print(f"  Rata-rata      : {avg_chars:.1f} karakter/kalimat")
     print_memory_info("SETELAH LOAD DATA")
 
-    # 2. Tokenizer (baru atau dari checkpoint)
-    # total_steps dikelola sebagai variabel Python biasa (BUKAN atribut pada
-    # object scheduler C++, karena WarmupCosineScheduler tidak mengekspos itu).
+    # 2. Tokenizer
     if resume_checkpoint:
         print("\n" + "="*60)
         print("📦 MEMUAT CHECKPOINT")
@@ -158,12 +395,11 @@ def main():
         )
         print(f"  Checkpoint     : {resume_checkpoint}")
         print(f"  Config         : {config}")
-        print(f"  Vocab size     : {len(tokenizer.vocab)}")
-        print(f"  Step terakhir  : {scheduler.step_num}")
+        print(f"  Vocab size     : {len(tokenizer.get_vocab())}")
+        print(f"  Step terakhir  : {scheduler.get_step_num()}")
         print(f"  Tambah steps   : {ADDITIONAL_STEPS}")
         print(f"  Total steps baru: {total_steps}")
     else:
-        # Training baru: latih tokenizer dari data
         print("\n" + "="*60)
         print("🔤 2. MELATIH TOKENIZER BPE")
         print("="*60)
@@ -174,8 +410,8 @@ def main():
         tokenizer = ByteLevelBPETokenizer()
         tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
         print(f"  Tokenizer selesai     : {format_time(time.time()-t0)}")
-        print(f"  Vocab size aktual     : {len(tokenizer.vocab)}")
-        vocab_items = list(tokenizer.vocab.items())[:10]
+        print(f"  Vocab size aktual     : {len(tokenizer.get_vocab())}")
+        vocab_items = list(tokenizer.get_vocab().items())[:10]
         print(f"  10 token pertama      : {[t[0] for t in vocab_items]}")
         print_memory_info("SETELAH TOKENIZER")
 
@@ -183,7 +419,8 @@ def main():
     print("\n" + "="*60)
     print("🔢 3. ENCODE & BUILD DATASET")
     print("="*60)
-    pad_id = tokenizer.vocab['<pad>']
+    vocab = tokenizer.get_vocab()
+    pad_id = vocab.get('<pad>', 0)
     tokenized = []
     total_tokens = 0
     for sent in sentences:
@@ -207,7 +444,7 @@ def main():
         print("\n" + "="*60)
         print("🧠 4. INISIALISASI MODEL")
         print("="*60)
-        actual_vocab = len(tokenizer.vocab)
+        actual_vocab = len(tokenizer.get_vocab())
         est_params = estimate_model_size(actual_vocab, D_MODEL, N_LAYERS, N_HEADS, D_FF, MAX_LEN)
         print(f"  Vocab size     : {actual_vocab}")
         print(f"  d_model        : {D_MODEL}")
@@ -247,7 +484,6 @@ def main():
         print(f"  Total steps    : {total_steps}")
         print(f"  Min LR         : 1e-5")
     else:
-        # Resume: model, optimizer, scheduler sudah di-load
         print("\n" + "="*60)
         print("🔄 MELANJUTKAN TRAINING")
         print("="*60)
@@ -268,9 +504,9 @@ def main():
     print(f"  Max grad norm : {MAX_GRAD_NORM}")
 
     start_time = time.time()
-    global_step = scheduler.step_num
+    global_step = scheduler.get_step_num()
     best_loss = float('inf')
-    wait = 0                    # <-- TAMBAHKAN: counter untuk Early Stopping
+    wait = 0
     history = []
 
     print("\n▶️  MEMULAI TRAINING...\n")
@@ -296,7 +532,7 @@ def main():
             print(f"  Batch {n_batches:3d}/{total_batches:<3d} : "
                   f"loss={loss:7.4f}  grad={grad_norm:6.4f}  lr={optimizer.lr:.7f}  RAM={mem_str}")
 
-            if scheduler.step_num >= total_steps:
+            if scheduler.get_step_num() >= total_steps:
                 break
 
         epoch_time = time.time() - epoch_start
@@ -315,22 +551,20 @@ def main():
             'time': format_time(epoch_time)
         })
 
-        # ========== EARLY STOPPING (TAMBAHKAN KODE INI) ==========
+        # Early Stopping
         if avg_loss < best_loss:
             best_loss = avg_loss
-            wait = 0  # Reset karena loss membaik
+            wait = 0
             print(f"  📈 Loss membaik! Best loss sekarang: {best_loss:.4f}")
         else:
             wait += 1
             print(f"  ⏳ Early Stopping: {wait}/{PATIENCE} (loss tidak membaik)")
 
-        # Jika sudah melewati batas sabar, hentikan training
         if wait >= PATIENCE:
             print(f"🛑 Early stopping dipicu setelah {PATIENCE} epoch tanpa perbaikan!")
             break
-        # ========================================================
 
-        if scheduler.step_num >= total_steps:
+        if scheduler.get_step_num() >= total_steps:
             print(f"⏰ Training berhenti: mencapai batas {total_steps} steps.")
             break
 
@@ -350,20 +584,20 @@ def main():
             print(f"  {h['epoch']:3d}    {h['avg_loss']:.4f}     {h['best_loss']:.4f}   {h['lr']:.8f}   {h['time']}")
     print_memory_info("SETELAH TRAINING")
 
-    # 7. SAVE CHECKPOINT BARU
+    # 7. SAVE CHECKPOINT
     print("\n" + "="*60)
     print("💾 7. MENYIMPAN CHECKPOINT BARU")
     print("="*60)
     version = get_next_version()
     checkpoint_path = f"Ai_{version}.json"
     config = {
-        "vocab_size": len(tokenizer.vocab),
+        "vocab_size": len(tokenizer.get_vocab()),
         "d_model": model.d_model,
-        "n_heads": model.n_heads if hasattr(model, 'n_heads') else N_HEADS,
-        "n_layers": model.n_layers if hasattr(model, 'n_layers') else N_LAYERS,
-        "d_ff": model.d_ff if hasattr(model, 'd_ff') else D_FF,
+        "n_heads": N_HEADS,
+        "n_layers": N_LAYERS,
+        "d_ff": D_FF,
         "max_len": model.max_len,
-        "dropout": model.dropout if hasattr(model, 'dropout') else DROPOUT
+        "dropout": DROPOUT
     }
     save_checkpoint(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler,
                     tokenizer=tokenizer, config=config, total_steps=total_steps)
