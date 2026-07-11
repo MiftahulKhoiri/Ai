@@ -5,6 +5,8 @@
 #include <sstream>
 #include <algorithm>
 #include <iostream>
+#include <unordered_set>
+#include <utility>
 
 Value::Value(double data, std::vector<Value::Ptr> children, std::string op)
     : data(data), grad(0.0), _prev(children), _op(op) {}
@@ -14,21 +16,33 @@ Value::Ptr Value::create(double data) {
 }
 
 void Value::backward() {
+    // FIX: iteratif (bukan rekursif) untuk menghindari stack overflow
+    // pada graph besar/dalam, dan pakai unordered_set<Value*> (bukan
+    // std::find di vector) supaya lookup visited jadi O(1), bukan O(n).
     std::vector<Value::Ptr> topo;
-    std::vector<Value::Ptr> visited;
-    
-    std::function<void(Value::Ptr)> build_topo = [&](Value::Ptr v) {
-        auto it = std::find(visited.begin(), visited.end(), v);
-        if (it == visited.end()) {
-            visited.push_back(v);
-            for (auto& child : v->_prev) {
-                build_topo(child);
+    std::unordered_set<Value*> visited;
+
+    // frame: {node, index child berikutnya yang mau diproses}
+    std::vector<std::pair<Value::Ptr, size_t>> stack;
+    stack.push_back({shared_from_this(), 0});
+    visited.insert(this);
+
+    while (!stack.empty()) {
+        auto& [node, idx] = stack.back();
+
+        if (idx < node->_prev.size()) {
+            Value::Ptr child = node->_prev[idx];
+            idx++; // maju ke child berikutnya untuk kunjungan selanjutnya
+            if (visited.find(child.get()) == visited.end()) {
+                visited.insert(child.get());
+                stack.push_back({child, 0});
             }
-            topo.push_back(v);
+        } else {
+            topo.push_back(node);
+            stack.pop_back();
         }
-    };
-    build_topo(shared_from_this());
-    
+    }
+
     this->grad = 1.0;
     for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
         if ((*it)->_backward) {
