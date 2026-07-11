@@ -1,6 +1,7 @@
 // layers.cpp
 #include "layers.h"
 #include "utils.h"
+#include "optim.h"  // <-- TAMBAHKAN INI
 #include <cmath>
 #include <iostream>
 #include <random>
