@@ -1,7 +1,7 @@
 // layers.cpp
 #include "layers.h"
 #include "utils.h"
-#include "optim.h"  // <-- TAMBAHKAN INI
+#include "optim.h"
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -23,22 +23,22 @@ std::vector<ValuePtr> linear_forward(
     const std::vector<ValuePtr>& x,
     const std::vector<ValuePtr>& weight,
     const std::vector<ValuePtr>& bias) {
-    
+
     if (x.empty() || weight.empty()) {
         std::cerr << "[ERROR] linear_forward: empty input" << std::endl;
         return {};
     }
-    
+
     int in_features = x.size();
     int out_features = weight.size() / in_features;
-    
+
     if (out_features == 0) {
         std::cerr << "[ERROR] linear_forward: out_features=0" << std::endl;
         return {};
     }
-    
+
     std::vector<ValuePtr> result(out_features);
-    
+
     for (int i = 0; i < out_features; ++i) {
         result[i] = Value::create(0.0);
         for (int j = 0; j < in_features; ++j) {
@@ -54,7 +54,7 @@ std::vector<ValuePtr> linear_forward(
             result[i] = result[i] + bias[i];
         }
     }
-    
+
     return result;
 }
 
@@ -64,23 +64,30 @@ std::vector<ValuePtr> linear_forward(
 
 Embedding::Embedding(int vocab_size, int d_model) 
     : vocab_size(vocab_size), d_model(d_model) {
-    weight.reserve(vocab_size);
-    for (int i = 0; i < vocab_size; ++i) {
+    // FIX: alokasi flat vocab_size * d_model, bukan cuma vocab_size.
+    // Tiap token butuh vector sepanjang d_model, bukan 1 scalar.
+    weight.reserve((size_t)vocab_size * d_model);
+    for (int i = 0; i < vocab_size * d_model; ++i) {
         weight.push_back(Value::create(random_normal(0, 0.02)));
     }
 }
 
-std::vector<ValuePtr> Embedding::forward(const std::vector<int>& ids) {
-    std::vector<ValuePtr> result;
+std::vector<std::vector<ValuePtr>> Embedding::forward(const std::vector<int>& ids) {
+    std::vector<std::vector<ValuePtr>> result;
     result.reserve(ids.size());
-    
+
     for (int id : ids) {
-        if (id < 0 || id >= (int)weight.size()) {
-            std::cerr << "[ERROR] Embedding: id " << id << " out of range (vocab size " << weight.size() << ")" << std::endl;
-            result.push_back(Value::create(0.0));
+        if (id < 0 || id >= vocab_size) {
+            std::cerr << "[ERROR] Embedding: id " << id << " out of range (vocab size " << vocab_size << ")" << std::endl;
+            result.push_back(std::vector<ValuePtr>(d_model, Value::create(0.0)));
             continue;
         }
-        result.push_back(weight[id]);
+        std::vector<ValuePtr> vec;
+        vec.reserve(d_model);
+        for (int j = 0; j < d_model; ++j) {
+            vec.push_back(weight[(size_t)id * d_model + j]);
+        }
+        result.push_back(vec);
     }
     return result;
 }
@@ -114,12 +121,12 @@ std::vector<ValuePtr> PositionalEmbedding::forward(int seq_len) {
                   << " > max_len " << max_len << ", truncating" << std::endl;
         seq_len = max_len;
     }
-    
+
     std::vector<ValuePtr> result;
     if (seq_len <= 0 || seq_len > (int)pos_encoding.size()) {
         return result;
     }
-    
+
     for (int i = 0; i < seq_len; ++i) {
         for (const auto& v : pos_encoding[i]) {
             result.push_back(v);
@@ -138,7 +145,7 @@ std::vector<ValuePtr> Dropout::forward(const std::vector<ValuePtr>& x) {
     if (!training || p <= 0.0) {
         return x;
     }
-    
+
     if (p >= 1.0) {
         std::vector<ValuePtr> result;
         result.reserve(x.size());
@@ -147,13 +154,13 @@ std::vector<ValuePtr> Dropout::forward(const std::vector<ValuePtr>& x) {
         }
         return result;
     }
-    
+
     std::vector<ValuePtr> result;
     result.reserve(x.size());
-    
+
     double scale = 1.0 / (1.0 - p);
     std::uniform_real_distribution<> dist(0.0, 1.0);
-    
+
     for (size_t i = 0; i < x.size(); ++i) {
         if (dist(gen) < p) {
             result.push_back(Value::create(0.0));
@@ -176,23 +183,23 @@ LayerNorm::LayerNorm(int d_model, double eps)
 
 std::vector<ValuePtr> LayerNorm::forward(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
-    
+
     ValuePtr mean = Value::create(0.0);
     for (const auto& v : x) {
         mean = mean + v;
     }
     mean = mean / Value::create((double)x.size());
-    
+
     ValuePtr var = Value::create(0.0);
     for (const auto& v : x) {
         var = var + ((v - mean) * (v - mean));
     }
     var = var / Value::create((double)x.size());
-    
+
     std::vector<ValuePtr> result;
     result.reserve(x.size());
     ValuePtr stddev = sqrt(var + Value::create(eps));
-    
+
     for (const auto& v : x) {
         ValuePtr normalized = (v - mean) / stddev;
         result.push_back(normalized * weight + bias);
@@ -207,17 +214,17 @@ std::vector<ValuePtr> LayerNorm::forward(const std::vector<ValuePtr>& x) {
 MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double dropout, int max_len)
     : d_model(d_model), n_heads(n_heads), dropout_p(dropout), max_len(max_len),
       attn_dropout(dropout) {
-    
+
     if (d_model % n_heads != 0) {
         std::cerr << "[ERROR] MultiHeadSelfAttention: d_model " << d_model 
                   << " not divisible by n_heads " << n_heads << std::endl;
         n_heads = 1;
         while (d_model % n_heads != 0) n_heads++;
     }
-    
+
     int d_k = d_model / n_heads;
     (void)d_k; // Suppress unused variable warning
-    
+
     // Initialize weights
     for (int i = 0; i < d_model * d_model; ++i) {
         weight_q.push_back(Value::create(random_normal(0, 0.02)));
@@ -227,7 +234,7 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
     for (int i = 0; i < d_model * d_model; ++i) {
         weight_o.push_back(Value::create(random_normal(0, 0.02)));
     }
-    
+
     // Initialize biases
     for (int i = 0; i < d_model; ++i) {
         bias_q.push_back(Value::create(0.0));
@@ -240,32 +247,32 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
 std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
     const std::vector<std::vector<ValuePtr>>& x,
     const std::vector<int>& pad_mask) {
-    
+
     if (x.empty()) {
         return {};
     }
-    
+
     int seq_len = x.size();
     if (seq_len == 0) return {};
-    
+
     int d_model = x[0].size();
     if (d_model == 0) return {};
-    
+
     int d_k = d_model / n_heads;
     if (d_k == 0) {
         std::cerr << "[ERROR] Attention: d_k=0" << std::endl;
         return {};
     }
-    
+
     // Project to Q, K, V
     std::vector<std::vector<ValuePtr>> q(seq_len), k(seq_len), v(seq_len);
-    
+
     for (int i = 0; i < seq_len; ++i) {
         q[i] = linear_forward(x[i], weight_q, bias_q);
         k[i] = linear_forward(x[i], weight_k, bias_k);
         v[i] = linear_forward(x[i], weight_v, bias_v);
     }
-    
+
     // Reshape for multi-head
     std::vector<std::vector<std::vector<ValuePtr>>> q_heads(seq_len);
     for (int i = 0; i < seq_len; ++i) {
@@ -280,7 +287,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             }
         }
     }
-    
+
     // K heads: [n_heads, seq_len, d_k]
     std::vector<std::vector<std::vector<ValuePtr>>> k_heads(n_heads);
     for (int h = 0; h < n_heads; ++h) {
@@ -295,7 +302,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             }
         }
     }
-    
+
     // V heads: [seq_len, n_heads, d_k]
     std::vector<std::vector<std::vector<ValuePtr>>> v_heads(seq_len);
     for (int i = 0; i < seq_len; ++i) {
@@ -310,7 +317,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             }
         }
     }
-    
+
     // Compute attention
     std::vector<std::vector<std::vector<ValuePtr>>> attn_outputs(seq_len);
     for (int i = 0; i < seq_len; ++i) {
@@ -327,13 +334,13 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 }
                 scores[j] = dot;
             }
-            
+
             // Scale
             double scale = 1.0 / std::sqrt((double)d_k);
             for (auto& score : scores) {
                 score = score * Value::create(scale);
             }
-            
+
             // Apply mask
             if (!pad_mask.empty()) {
                 for (int j = 0; j < seq_len; ++j) {
@@ -342,13 +349,13 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                     }
                 }
             }
-            
+
             // Softmax
             auto probs = softmax(scores);
-            
+
             // Apply dropout
             auto dropped_probs = attn_dropout.forward(probs);
-            
+
             // Apply to V
             std::vector<ValuePtr> out(d_k);
             for (int j = 0; j < d_k; ++j) {
@@ -362,7 +369,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             attn_outputs[i][h] = out;
         }
     }
-    
+
     // Concatenate heads
     std::vector<std::vector<ValuePtr>> concat(seq_len);
     for (int i = 0; i < seq_len; ++i) {
@@ -373,7 +380,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             }
         }
     }
-    
+
     // Final projection
     std::vector<std::vector<ValuePtr>> output(seq_len);
     for (int i = 0; i < seq_len; ++i) {
@@ -383,7 +390,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
             output[i] = std::vector<ValuePtr>(d_model, Value::create(0.0));
         }
     }
-    
+
     return output;
 }
 
@@ -394,7 +401,7 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
 FeedForward::FeedForward(int d_model, int d_ff, double dropout) 
     : d_model(d_model), d_ff(d_ff), dropout_p(dropout),
       ff_dropout(dropout) {
-    
+
     // Initialize weights
     for (int i = 0; i < d_model * d_ff; ++i) {
         w1.push_back(Value::create(random_normal(0, 0.02)));
@@ -402,7 +409,7 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
     for (int i = 0; i < d_ff * d_model; ++i) {
         w2.push_back(Value::create(random_normal(0, 0.02)));
     }
-    
+
     // Initialize biases
     for (int i = 0; i < d_ff; ++i) {
         b1.push_back(Value::create(0.0));
@@ -414,19 +421,19 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
 
 std::vector<ValuePtr> FeedForward::forward(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
-    
+
     // First linear + GELU
     auto hidden = linear_forward(x, w1, b1);
     for (auto& v : hidden) {
         v = gelu(v);
     }
-    
+
     // Dropout
     auto dropped = ff_dropout.forward(hidden);
-    
+
     // Second linear
     auto output = linear_forward(dropped, w2, b2);
-    
+
     return output;
 }
 
@@ -445,13 +452,13 @@ TransformerBlock::TransformerBlock(int d_model, int n_heads, int d_ff, double dr
 std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
     const std::vector<std::vector<ValuePtr>>& x,
     const std::vector<int>& pad_mask) {
-    
+
     if (x.empty()) return {};
-    
+
     // Self-attention with residual
     auto attn_out = attn.forward(x, pad_mask);
     if (attn_out.empty()) return {};
-    
+
     // Add residual and layer norm
     std::vector<std::vector<ValuePtr>> attn_residual(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
@@ -464,19 +471,19 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
             }
         }
     }
-    
+
     // Layer norm on residual
     std::vector<std::vector<ValuePtr>> norm1(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         norm1[i] = ln1.forward(attn_residual[i]);
     }
-    
+
     // Feed forward with residual
     std::vector<std::vector<ValuePtr>> ff_out(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         ff_out[i] = ff.forward(norm1[i]);
     }
-    
+
     // Add residual and layer norm
     std::vector<std::vector<ValuePtr>> ff_residual(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
@@ -489,13 +496,13 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
             }
         }
     }
-    
+
     // Final layer norm
     std::vector<std::vector<ValuePtr>> output(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         output[i] = ln2.forward(ff_residual[i]);
     }
-    
+
     return output;
 }
 
@@ -505,12 +512,12 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
 
 Linear::Linear(int in_features, int out_features) 
     : in_features(in_features), out_features(out_features) {
-    
+
     // Initialize weights
     for (int i = 0; i < in_features * out_features; ++i) {
         weight.push_back(Value::create(random_normal(0, 0.02)));
     }
-    
+
     // Initialize biases
     for (int i = 0; i < out_features; ++i) {
         bias.push_back(Value::create(0.0));
