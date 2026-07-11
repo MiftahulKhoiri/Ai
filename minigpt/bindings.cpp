@@ -1,4 +1,5 @@
-// bindings.cpp
+// bindings.cpp - Tambahkan py::arg() untuk semua fungsi
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
@@ -18,11 +19,6 @@
 #include "test.h"
 #include "quantization.h"
 
-// Forward declarations untuk fungsi yang mungkin belum diimplementasikan
-namespace quantization {
-    // Fungsi-fungsi ini sudah dideklarasikan di quantization.h
-}
-
 namespace py = pybind11;
 
 PYBIND11_MODULE(minigpt, m) {
@@ -32,7 +28,7 @@ PYBIND11_MODULE(minigpt, m) {
     // VALUE
     // ============================================================
     py::class_<Value, std::shared_ptr<Value>>(m, "Value")
-        .def(py::init<double>())
+        .def(py::init<double>(), py::arg("data"))
         .def_readwrite("data", &Value::data)
         .def_readwrite("grad", &Value::grad)
         .def("backward", &Value::backward)
@@ -47,12 +43,13 @@ PYBIND11_MODULE(minigpt, m) {
     // ============================================================
     py::class_<ByteLevelBPETokenizer>(m, "Tokenizer")
         .def(py::init<>())
-        .def("train", &ByteLevelBPETokenizer::train)
+        .def("train", &ByteLevelBPETokenizer::train, 
+             py::arg("corpus"), py::arg("vocab_size"))  // <-- TAMBAHKAN INI!
         .def("encode", &ByteLevelBPETokenizer::encode, 
              py::arg("text"), py::arg("add_bos") = false, py::arg("add_eos") = false)
-        .def("decode", &ByteLevelBPETokenizer::decode)
-        .def("save", &ByteLevelBPETokenizer::save)
-        .def("load", &ByteLevelBPETokenizer::load)
+        .def("decode", &ByteLevelBPETokenizer::decode, py::arg("ids"))
+        .def("save", &ByteLevelBPETokenizer::save, py::arg("path"))
+        .def("load", &ByteLevelBPETokenizer::load, py::arg("path"))
         .def("vocab_size", &ByteLevelBPETokenizer::vocab_size)
         .def("get_vocab", &ByteLevelBPETokenizer::get_vocab)
         .def("get_inv_vocab", &ByteLevelBPETokenizer::get_inv_vocab)
@@ -60,7 +57,10 @@ PYBIND11_MODULE(minigpt, m) {
         .def("get_eos_token_id", &ByteLevelBPETokenizer::get_eos_token_id)
         .def("get_bos_token_id", &ByteLevelBPETokenizer::get_bos_token_id)
         .def("get_pad_token_id", &ByteLevelBPETokenizer::get_pad_token_id)
-        .def("get_unk_token_id", &ByteLevelBPETokenizer::get_unk_token_id);
+        .def("get_unk_token_id", &ByteLevelBPETokenizer::get_unk_token_id)
+        .def("set_vocab", &ByteLevelBPETokenizer::set_vocab, py::arg("vocab"))
+        .def("set_inv_vocab", &ByteLevelBPETokenizer::set_inv_vocab, py::arg("inv_vocab"))
+        .def("set_merge_order", &ByteLevelBPETokenizer::set_merge_order, py::arg("merge_order"));
 
     // ============================================================
     // MODEL CONFIG
@@ -93,8 +93,8 @@ PYBIND11_MODULE(minigpt, m) {
         .def_readwrite("init_std", &ModelConfig::init_std)
         .def_readwrite("share_embeddings", &ModelConfig::share_embeddings)
         .def_readwrite("device", &ModelConfig::device)
-        .def_static("from_json", &ModelConfig::from_json)
-        .def("to_json", &ModelConfig::to_json);
+        .def_static("from_json", &ModelConfig::from_json, py::arg("path"))
+        .def("to_json", &ModelConfig::to_json, py::arg("path"));
 
     // ============================================================
     // MINIGPT MODEL
@@ -108,11 +108,11 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("d_ff") = 32,
              py::arg("max_len") = 64,
              py::arg("dropout") = 0.1)
-        .def("forward", &MiniGPT::forward)
-        .def("forward_incremental", &MiniGPT::forward_incremental)
+        .def("forward", &MiniGPT::forward, py::arg("token_ids"), py::arg("pad_mask") = std::vector<int>{})
+        .def("forward_incremental", &MiniGPT::forward_incremental, py::arg("token_id"), py::arg("pos"))
         .def("init_cache", &MiniGPT::init_cache)
         .def("parameters", &MiniGPT::parameters)
-        .def("set_training", &MiniGPT::set_training)
+        .def("set_training", &MiniGPT::set_training, py::arg("mode"))
         .def_readonly("d_model", &MiniGPT::d_model)
         .def_readonly("max_len", &MiniGPT::max_len)
         .def_readonly("vocab_size", &MiniGPT::vocab_size)
@@ -141,10 +141,10 @@ PYBIND11_MODULE(minigpt, m) {
         .def("get_m", &AdamW::get_m)
         .def("get_v", &AdamW::get_v)
         .def("get_t", &AdamW::get_t)
-        .def("set_params", &AdamW::set_params)
-        .def("set_m", &AdamW::set_m)
-        .def("set_v", &AdamW::set_v)
-        .def("set_t", &AdamW::set_t);
+        .def("set_params", &AdamW::set_params, py::arg("params"))
+        .def("set_m", &AdamW::set_m, py::arg("m"))
+        .def("set_v", &AdamW::set_v, py::arg("v"))
+        .def("set_t", &AdamW::set_t, py::arg("t"));
 
     py::class_<WarmupCosineScheduler>(m, "WarmupCosineScheduler")
         .def(py::init<AdamW*, int, int, double, double>(),
@@ -155,7 +155,7 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("min_lr") = 1e-5)
         .def("step", &WarmupCosineScheduler::step)
         .def("get_step_num", &WarmupCosineScheduler::get_step_num)
-        .def("set_step_num", &WarmupCosineScheduler::set_step_num);
+        .def("set_step_num", &WarmupCosineScheduler::set_step_num, py::arg("step_num"));
 
     // ============================================================
     // LOSS FUNCTIONS
@@ -306,7 +306,6 @@ PYBIND11_MODULE(minigpt, m) {
     m.def("compress_model", &quantization::compress_model,
           py::arg("model"), py::arg("compression_ratio") = 0.5);
 
-    // Distillation config
     py::class_<quantization::DistillationConfig>(m, "DistillationConfig")
         .def(py::init<>())
         .def_readwrite("temperature", &quantization::DistillationConfig::temperature)
