@@ -1,329 +1,197 @@
 #include "optim.h"
-#include "utils.h"
 #include <cmath>
 #include <algorithm>
-#include <stdexcept>
-#include <limits>
+#include <numeric>
 
-// ===== HAPUS BARIS 10-12: PI sudah didefinisikan di optim.h =====
-// namespace {
-//     constexpr double PI = 3.14159265358979323846;
-// }
-
-ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
-                            const std::vector<int>& target_ids,
-                            const std::vector<int>& pad_mask) {
-    // Validasi ukuran
-    if (logits_seq.empty() || target_ids.empty() || pad_mask.empty()) {
-        return Value::create(0.0);
-    }
-
-    if (logits_seq.size() != target_ids.size() || logits_seq.size() != pad_mask.size()) {
-        throw std::invalid_argument(
-            "Size mismatch: logits_seq=" + std::to_string(logits_seq.size()) +
-            ", target_ids=" + std::to_string(target_ids.size()) +
-            ", pad_mask=" + std::to_string(pad_mask.size())
-        );
-    }
-
-    std::vector<ValuePtr> losses;
-    losses.reserve(logits_seq.size());
-
-    for (size_t i = 0; i < logits_seq.size(); ++i) {
-        if (pad_mask[i] == 0) continue;
-
-        // Validasi nullptr dan indeks target
-        if (logits_seq[i].empty()) continue;
-
-        // Periksa nullptr untuk setiap elemen
-        bool has_nullptr = false;
-        for (const auto& val : logits_seq[i]) {
-            if (!val) {
-                has_nullptr = true;
-                break;
-            }
-        }
-        if (has_nullptr) continue;
-
-        if (target_ids[i] < 0 || target_ids[i] >= static_cast<int>(logits_seq[i].size())) {
-            throw std::out_of_range(
-                "Target ID " + std::to_string(target_ids[i]) +
-                " out of range [0, " + std::to_string(logits_seq[i].size()) + ") at position " + std::to_string(i)
-            );
-        }
-
-        // Gunakan log_softmax untuk stabilitas numerik yang lebih baik
-        auto log_probs = log_softmax(logits_seq[i]);
-
-        // Periksa nullptr pada hasil dan target
-        if (target_ids[i] < static_cast<int>(log_probs.size()) && log_probs[target_ids[i]]) {
-            losses.push_back(log_probs[target_ids[i]] * -1.0);
-        }
-    }
-
-    if (losses.empty()) return Value::create(0.0);
-
-    ValuePtr total = Value::create(0.0);
-    for (const auto& l : losses) {
-        if (l) {  // Periksa nullptr
-            total = total + l;
-        }
-    }
-    return total / static_cast<double>(losses.size());
-}
-
-// Implementasi log_softmax yang lebih stabil secara numerik dan efisien
+// ============================================================
+// LOG SOFTMAX
+// ============================================================
 std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
-
-    // Periksa nullptr dan temukan nilai maksimum untuk stabilitas numerik
-    double max_val = -std::numeric_limits<double>::infinity();
-    bool has_valid = false;
-
-    for (const auto& val : x) {
-        if (val && !std::isnan(val->data) && !std::isinf(val->data)) {
-            if (val->data > max_val) {
-                max_val = val->data;
-            }
-            has_valid = true;
-        }
+    
+    // Cari max untuk stabilitas numerik
+    double max_val = x[0]->data;
+    for (size_t i = 1; i < x.size(); ++i) {
+        if (x[i]->data > max_val) max_val = x[i]->data;
     }
-
-    if (!has_valid) {
-        // Jika semua nilai invalid, kembalikan vector dengan nilai 0
-        return std::vector<ValuePtr>(x.size(), Value::create(0.0));
+    
+    // Hitung exp dan sum
+    std::vector<ValuePtr> exp_vals;
+    exp_vals.reserve(x.size());
+    double sum = 0.0;
+    for (size_t i = 0; i < x.size(); ++i) {
+        double val = std::exp(x[i]->data - max_val);
+        exp_vals.push_back(Value::create(val));
+        sum += val;
     }
-
-    // Hitung sum(exp(x - max)) tanpa menyimpan exp_vals
-    ValuePtr sum_exp = Value::create(0.0);
-
-    for (const auto& val : x) {
-        if (val && !std::isnan(val->data) && !std::isinf(val->data)) {
-            auto shifted = val - max_val;
-            auto exp_val = exp(shifted);
-            if (exp_val) {  // Periksa nullptr
-                sum_exp = sum_exp + exp_val;
-            }
-        }
-    }
-
-    // Hitung log(sum_exp)
-    auto log_sum = log(sum_exp);
-    if (!log_sum) {
-        // Fallback jika log gagal
-        return std::vector<ValuePtr>(x.size(), Value::create(0.0));
-    }
-
-    // Hitung log_softmax: x - max - log(sum_exp)
+    
+    // Log-softmax: log(exp(x_i) / sum) = x_i - max - log(sum)
     std::vector<ValuePtr> result;
     result.reserve(x.size());
-
+    double log_sum = std::log(sum);
     for (size_t i = 0; i < x.size(); ++i) {
-        if (x[i] && !std::isnan(x[i]->data) && !std::isinf(x[i]->data)) {
-            result.push_back(x[i] - max_val - log_sum);
-        } else {
-            result.push_back(Value::create(-std::numeric_limits<double>::infinity()));
-        }
+        result.push_back(Value::create(x[i]->data - max_val - log_sum));
+        // Backward untuk log_softmax
+        result.back()->_backward = [result, x, i, sum]() {
+            double grad = result[i]->grad;
+            for (size_t j = 0; j < x.size(); ++j) {
+                double delta = (i == j) ? 1.0 : 0.0;
+                double softmax_j = std::exp(x[j]->data - max_val) / sum;
+                x[j]->grad += grad * (delta - softmax_j);
+            }
+        };
     }
-
     return result;
 }
 
-// ===== PERBAIKAN 1: Urutkan init list sesuai deklarasi di header =====
-// Urutan di header: params, b1, b2, eps, wd, decoupled_wd, m, v, t, lr
-AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1, double betas2, 
-             double eps, double weight_decay, bool decoupled_wd)
-    : params(std::move(params)),        // 1. params (vector<ValuePtr>)
-      b1(betas1),                        // 2. b1 (double)
-      b2(betas2),                        // 3. b2 (double)
-      eps(eps),                          // 4. eps (double)
-      wd(weight_decay),                  // 5. wd (double)
-      decoupled_wd(decoupled_wd),        // 6. decoupled_wd (bool)
-      m(this->params.size(), 0.0),       // 7. m (vector<double>)
-      v(this->params.size(), 0.0),       // 8. v (vector<double>)
-      t(0),                              // 9. t (int)
-      lr(lr)                             // 10. lr (double) ← pindah ke sini
-{
-    // Validasi parameter
-    if (this->params.empty()) {
-        throw std::invalid_argument("Parameter list cannot be empty");
+// ============================================================
+// CROSS ENTROPY LOSS
+// ============================================================
+ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
+                            const std::vector<int>& target_ids,
+                            const std::vector<int>& pad_mask) {
+    if (logits_seq.empty() || target_ids.empty()) {
+        return Value::create(0.0);
     }
-    if (lr <= 0) {
-        throw std::invalid_argument("Learning rate must be positive, got: " + std::to_string(lr));
+    
+    std::vector<ValuePtr> losses;
+    size_t seq_len = std::min(logits_seq.size(), target_ids.size());
+    
+    for (size_t pos = 0; pos < seq_len; ++pos) {
+        // Skip jika pad_mask menunjukkan padding
+        if (pos < pad_mask.size() && pad_mask[pos] == 1) continue;
+        
+        int target = target_ids[pos];
+        if (target < 0 || target >= (int)logits_seq[pos].size()) continue;
+        
+        // Log-softmax untuk stabilitas
+        auto log_probs = log_softmax(logits_seq[pos]);
+        // Negative log likelihood: -log(p_target)
+        auto neg_log = Value::create(-log_probs[target]->data);
+        losses.push_back(neg_log);
     }
-    if (eps <= 0) {
-        throw std::invalid_argument("Epsilon must be positive, got: " + std::to_string(eps));
+    
+    if (losses.empty()) {
+        return Value::create(0.0);
     }
-
-    // Periksa nullptr pada parameter
-    for (const auto& p : this->params) {
-        if (!p) {
-            throw std::invalid_argument("Parameter list contains null pointer");
+    
+    // Average loss
+    double sum = 0.0;
+    for (const auto& loss : losses) {
+        sum += loss->data;
+    }
+    double avg = sum / losses.size();
+    
+    auto result = Value::create(avg);
+    result->_backward = [result, losses]() {
+        double grad = result->grad / losses.size();
+        for (auto& loss : losses) {
+            loss->grad += grad;
         }
-    }
-
-    // m dan v sudah diinisialisasi di init list, tidak perlu resize lagi
-    // m.resize(this->params.size(), 0.0);  ← HAPUS, sudah di init list
-    // v.resize(this->params.size(), 0.0);  ← HAPUS, sudah di init list
+    };
+    return result;
 }
 
-void AdamW::step() {
-    if (params.empty()) return;
-
-    t++;
-    double bc1 = 1.0 - std::pow(b1, t);
-    double bc2 = 1.0 - std::pow(b2, t);
-
-    // Hindari division by zero
-    if (bc1 < 1e-10) bc1 = 1e-10;
-    if (bc2 < 1e-10) bc2 = 1e-10;
-
-    for (size_t i = 0; i < params.size(); ++i) {
-        // Periksa nullptr
-        if (!params[i]) continue;
-
-        double g = params[i]->grad;
-
-        // Skip parameter dengan gradien NaN, Inf, atau 0
-        if (std::isnan(g) || std::isinf(g) || g == 0.0) {
-            continue;
-        }
-
-        // Update moments
-        m[i] = b1 * m[i] + (1.0 - b1) * g;
-        v[i] = b2 * v[i] + (1.0 - b2) * g * g;
-
-        double m_hat = m[i] / bc1;
-        double v_hat = v[i] / bc2;
-
-        // Decoupled weight decay sesuai paper AdamW
-        if (decoupled_wd && wd > 0.0) {
-            // Langkah 1: Apply weight decay langsung ke parameter
-            params[i]->data -= lr * wd * params[i]->data;
-        }
-
-        // Langkah 2: Apply Adam update
-        double update = lr * m_hat / (std::sqrt(v_hat) + eps);
-        params[i]->data -= update;
-
-        // Jika bukan decoupled, weight decay sudah termasuk dalam gradien
-        // (diharapkan sudah ditambahkan di luar optimizer)
-    }
+// ============================================================
+// ADAMW OPTIMIZER
+// ============================================================
+AdamW::AdamW(std::vector<ValuePtr> params, double lr, double betas1, 
+             double betas2, double eps, double weight_decay, bool decoupled_wd)
+    : params(std::move(params)),
+      lr(lr),
+      b1(betas1),
+      b2(betas2),
+      eps(eps),
+      wd(weight_decay),
+      decoupled_wd(decoupled_wd),
+      m(this->params.size(), 0.0),
+      v(this->params.size(), 0.0),
+      t(0)
+{
+    // Semua inisialisasi sudah di member initializer list
 }
 
 void AdamW::zero_grad() {
     for (auto& p : params) {
-        if (p) {  // Periksa nullptr
-            p->grad = 0.0;
-        }
+        p->grad = 0.0;
     }
 }
 
+void AdamW::step() {
+    t++;
+    double bias_correction1 = 1.0 - std::pow(b1, t);
+    double bias_correction2 = 1.0 - std::pow(b2, t);
+    
+    for (size_t i = 0; i < params.size(); ++i) {
+        auto& p = params[i];
+        double grad = p->grad;
+        
+        // Update momentum
+        m[i] = b1 * m[i] + (1.0 - b1) * grad;
+        v[i] = b2 * v[i] + (1.0 - b2) * grad * grad;
+        
+        // Bias correction
+        double m_hat = m[i] / bias_correction1;
+        double v_hat = v[i] / bias_correction2;
+        
+        // Update parameter
+        double update = lr * m_hat / (std::sqrt(v_hat) + eps);
+        
+        // Decoupled weight decay (AdamW)
+        if (decoupled_wd) {
+            p->data -= lr * wd * p->data;
+        } else {
+            // L2 regularization (standard Adam)
+            update += lr * wd * p->data;
+        }
+        
+        p->data -= update;
+    }
+}
+
+// ============================================================
+// CLIP GRAD NORM
+// ============================================================
 double clip_grad_norm(std::vector<ValuePtr>& params, double max_norm) {
-    if (params.empty() || max_norm <= 0.0) {
-        return 0.0;
-    }
-
-    double total_sq = 0.0;
-    int valid_params = 0;
-
+    double total_norm = 0.0;
     for (const auto& p : params) {
-        if (!p) continue;  // Periksa nullptr
-
-        double g = p->grad;
-        // Skip NaN dan Inf
-        if (!std::isnan(g) && !std::isinf(g)) {
-            total_sq += g * g;
-            valid_params++;
-        }
+        total_norm += p->grad * p->grad;
     }
-
-    if (valid_params == 0) {
-        return 0.0;
-    }
-
-    double norm = std::sqrt(total_sq);
-
-    if (norm > max_norm && norm > 0.0) {
-        double scale = max_norm / norm;
+    total_norm = std::sqrt(total_norm);
+    
+    if (total_norm > max_norm && max_norm > 0.0) {
+        double scale = max_norm / total_norm;
         for (auto& p : params) {
-            if (!p) continue;  // Periksa nullptr
-
-            double g = p->grad;
-            if (!std::isnan(g) && !std::isinf(g)) {
-                p->grad *= scale;
-            }
+            p->grad *= scale;
         }
+        return total_norm * scale;
     }
-
-    return norm;
+    return total_norm;
 }
 
-// ===== PERBAIKAN 2: Urutkan init list sesuai deklarasi di header =====
-// Urutan di header: opt, warmup, total, step_num, base_lr, min_lr
+// ============================================================
+// WARMUP COSINE SCHEDULER
+// ============================================================
 WarmupCosineScheduler::WarmupCosineScheduler(AdamW* opt, int warmup_steps, int total_steps, 
                                              double base_lr, double min_lr)
-    : opt(opt),              // 1. opt (AdamW*)
-      warmup(warmup_steps),   // 2. warmup (int)
-      total(total_steps),     // 3. total (int)
-      step_num(0),            // 4. step_num (int) ← pindah ke sini
-      base_lr(base_lr),       // 5. base_lr (double)
-      min_lr(min_lr)          // 6. min_lr (double) ← pindah ke sini
-{
-    if (!opt) {
-        throw std::invalid_argument("Optimizer pointer cannot be null");
-    }
-    if (total_steps <= 0) {
-        throw std::invalid_argument("Total steps must be positive, got: " + std::to_string(total_steps));
-    }
-    if (warmup_steps < 0) {
-        throw std::invalid_argument("Warmup steps cannot be negative, got: " + std::to_string(warmup_steps));
-    }
-    if (base_lr <= 0) {
-        throw std::invalid_argument("Base learning rate must be positive, got: " + std::to_string(base_lr));
-    }
-    if (min_lr < 0) {
-        throw std::invalid_argument("Minimum learning rate cannot be negative, got: " + std::to_string(min_lr));
-    }
-
-    // Pastikan warmup tidak melebihi total steps
-    if (warmup >= total) {
-        warmup = total - 1;
-        if (warmup < 0) warmup = 0;
-    }
-}
+    : opt(opt), warmup(warmup_steps), total(total_steps), 
+      step_num(0), base_lr(base_lr), min_lr(min_lr) {}
 
 double WarmupCosineScheduler::step() {
-    if (!opt) return 0.0;  // Periksa nullptr
-
     step_num++;
     double lr;
-
-    // Handle edge cases
-    if (total <= 0) {
-        lr = base_lr;
-    } else if (warmup <= 0 || step_num > warmup) {
-        // No warmup phase atau sudah melewati warmup
-        if (total <= warmup) {
-            // Hanya warmup, tidak ada cosine decay
-            lr = base_lr;
-        } else {
-            // Cosine decay phase
-            double progress = static_cast<double>(step_num - std::max(0, warmup)) / 
-                            static_cast<double>(total - std::max(0, warmup));
-            progress = std::max(0.0, std::min(1.0, progress));
-            lr = min_lr + 0.5 * (base_lr - min_lr) * (1.0 + std::cos(WarmupCosineScheduler::PI * progress));
-        }
+    
+    if (step_num < warmup) {
+        // Linear warmup
+        lr = base_lr * static_cast<double>(step_num) / warmup;
     } else {
-        // Warmup phase (warmup > 0)
-        lr = base_lr * static_cast<double>(step_num) / static_cast<double>(warmup);
+        // Cosine decay
+        double progress = static_cast<double>(step_num - warmup) / (total - warmup);
+        progress = std::min(1.0, progress);
+        double cosine = 0.5 * (1.0 + std::cos(PI * progress));
+        lr = min_lr + (base_lr - min_lr) * cosine;
     }
-
-    // Pastikan learning rate valid
-    if (std::isnan(lr) || std::isinf(lr)) {
-        lr = min_lr;
-    }
-
+    
     opt->lr = lr;
     return lr;
 }
