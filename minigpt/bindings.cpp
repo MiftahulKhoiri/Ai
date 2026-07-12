@@ -1,4 +1,3 @@
-// bindings.cpp
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
@@ -17,6 +16,7 @@
 #include "visualization.h"
 #include "test.h"
 #include "quantization.h"
+#include "mmap_ninja.h"   // <-- TAMBAHAN INI
 
 namespace py = pybind11;
 
@@ -321,6 +321,40 @@ PYBIND11_MODULE(minigpt, m) {
     // TEST RUNNER
     // ============================================================
     m.def("run_all_tests", &run_all_tests, "Run all unit tests");
+
+    // ============================================================
+    // MMAP_NINJA - Memory-mapped dataset loader (RAM-efficient)
+    // ============================================================
+    py::class_<mmap_ninja::MMapDataset>(m, "MMapDataset")
+        .def(py::init<const std::string&>(), py::arg("path"),
+             "Buka dataset dari file mmap (tanpa memuat ke RAM)")
+        .def("size", &mmap_ninja::MMapDataset::num_examples,
+             "Jumlah contoh dalam dataset")
+        .def("seq_len", &mmap_ninja::MMapDataset::seq_len,
+             "Panjang sekuens per contoh")
+        .def("get_example", &mmap_ninja::MMapDataset::get_example,
+             py::arg("idx"), "Ambil satu contoh sebagai vector<int>")
+        .def("get_batch", &mmap_ninja::MMapDataset::get_batch,
+             py::arg("indices"), "Ambil batch berdasarkan daftar indeks")
+        .def("prefetch", &mmap_ninja::MMapDataset::prefetch,
+             py::arg("idx"), py::arg("count") = 1,
+             "Minta OS memuat halaman ke cache (opsional)");
+
+    m.def("build_mmap_dataset", &mmap_ninja::build,
+          py::arg("out_path"), py::arg("examples"), py::arg("seq_len"),
+          "Bangun file mmap dari dataset (list of list of int)");
+
+    py::class_<mmap_ninja::MMapBatchIterator>(m, "MMapBatchIterator")
+        .def(py::init<const mmap_ninja::MMapDataset&, size_t, bool, unsigned>(),
+             py::arg("dataset"), py::arg("batch_size"),
+             py::arg("shuffle") = true, py::arg("seed") = 42,
+             "Iterator untuk batch dari dataset mmap")
+        .def("next_batch", &mmap_ninja::MMapBatchIterator::next_batch,
+             "Ambil batch berikutnya, return (bool, list<list<int>>)")
+        .def("reset", &mmap_ninja::MMapBatchIterator::reset,
+             "Reset iterator (acak ulang jika shuffle)")
+        .def("num_batches", &mmap_ninja::MMapBatchIterator::num_batches,
+             "Jumlah total batch per epoch");
 
     // ============================================================
     // VERSION INFO
