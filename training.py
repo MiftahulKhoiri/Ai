@@ -28,8 +28,8 @@ from minigpt import (
 # ============================================================
 # KONFIGURASI TRAINING
 # ============================================================
-SEQ_LEN = 8
-BATCH_SIZE = 2
+SEQ_LEN = 64
+BATCH_SIZE = 32
 EPOCHS = 50
 PATIENCE = 3
 LR = 0.01
@@ -41,7 +41,7 @@ D_MODEL = 16
 N_HEADS = 4
 N_LAYERS = 2
 D_FF = 16
-MAX_LEN = 32
+MAX_LEN = 64
 DROPOUT = 0.1
 VOCAB_SIZE = 200
 
