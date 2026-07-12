@@ -16,7 +16,7 @@
 #include "visualization.h"
 #include "test.h"
 #include "quantization.h"
-#include "mmap_ninja.h"   // <-- TAMBAHAN INI
+#include "mmap_ninja.h"
 
 namespace py = pybind11;
 
@@ -328,7 +328,7 @@ PYBIND11_MODULE(minigpt, m) {
     py::class_<mmap_ninja::MMapDataset>(m, "MMapDataset")
         .def(py::init<const std::string&>(), py::arg("path"),
              "Buka dataset dari file mmap (tanpa memuat ke RAM)")
-        .def("size", &mmap_ninja::MMapDataset::num_examples,
+        .def("size", &mmap_ninja::MMapDataset::size,
              "Jumlah contoh dalam dataset")
         .def("seq_len", &mmap_ninja::MMapDataset::seq_len,
              "Panjang sekuens per contoh")
@@ -340,7 +340,7 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("idx"), py::arg("count") = 1,
              "Minta OS memuat halaman ke cache (opsional)");
 
-    m.def("build_mmap_dataset", &mmap_ninja::build,
+    m.def("build_mmap_dataset", &mmap_ninja::MMapDatasetWriter::build,
           py::arg("out_path"), py::arg("examples"), py::arg("seq_len"),
           "Bangun file mmap dari dataset (list of list of int)");
 
@@ -349,8 +349,13 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("dataset"), py::arg("batch_size"),
              py::arg("shuffle") = true, py::arg("seed") = 42,
              "Iterator untuk batch dari dataset mmap")
-        .def("next_batch", &mmap_ninja::MMapBatchIterator::next_batch,
-             "Ambil batch berikutnya, return (bool, list<list<int>>)")
+        .def("next_batch", [](mmap_ninja::MMapBatchIterator& self) {
+            // next_batch() C++ pakai output-parameter (bool return + reference),
+            // jadi dibungkus lambda supaya di Python jadi (bool, list<list<int>>).
+            std::vector<std::vector<int>> batch;
+            bool ok = self.next_batch(batch);
+            return py::make_tuple(ok, batch);
+        }, "Ambil batch berikutnya, return (bool, list<list<int>>)")
         .def("reset", &mmap_ninja::MMapBatchIterator::reset,
              "Reset iterator (acak ulang jika shuffle)")
         .def("num_batches", &mmap_ninja::MMapBatchIterator::num_batches,
