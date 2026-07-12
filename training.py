@@ -29,15 +29,15 @@ from minigpt import (
 # KONFIGURASI TRAINING
 # ============================================================
 SEQ_LEN = 32
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCHS = 50
 PATIENCE = 3
 LR = 0.01
 WARMUP_STEPS = 30
-TOTAL_STEPS = 200
+TOTAL_STEPS = 100
 ADDITIONAL_STEPS = 100
 MAX_GRAD_NORM = 1.0
-D_MODEL = 16
+D_MODEL = 8
 N_HEADS = 4
 N_LAYERS = 2
 D_FF = 16
