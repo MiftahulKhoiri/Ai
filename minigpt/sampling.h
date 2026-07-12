@@ -16,50 +16,57 @@ namespace sampling {
         for (size_t i = 1; i < logits.size(); ++i) {
             if (logits[i]->data > max_val) {
                 max_val = logits[i]->data;
-                max_idx = i;
+                max_idx = static_cast<int>(i);
             }
         }
         return max_idx;
     }
-    
+
     // Top-K sampling
     inline std::vector<int> top_k_sample(const std::vector<Value::Ptr>& logits, 
                                          int k, float temperature = 1.0f) {
         if (logits.empty()) return {};
         if (k <= 0) k = logits.size();
-        
+
         std::vector<std::pair<int, double>> scored;
         scored.reserve(logits.size());
         for (size_t i = 0; i < logits.size(); ++i) {
-            scored.emplace_back(i, logits[i]->data);
+            scored.emplace_back(static_cast<int>(i), logits[i]->data);
         }
-        
+
         std::sort(scored.begin(), scored.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
-        
+
         if (k < (int)scored.size()) {
             scored.resize(k);
         }
-        
-        if (temperature != 1.0f && temperature > 0.0f) {
+
+        // FIX: exp() harus selalu dijalankan untuk mengubah logit jadi
+        // bobot softmax yang valid (non-negatif). Sebelumnya dilewati
+        // kalau temperature == 1.0, sehingga logit mentah (bisa negatif)
+        // dipakai langsung sebagai "probabilitas" -- normalisasi jadi
+        // tidak valid untuk kasus default yang paling umum dipakai.
+        if (temperature > 0.0f) {
             for (auto& p : scored) {
                 p.second = std::exp(p.second / temperature);
             }
+        } else {
+            return {scored[0].first};  // temperature tidak valid -> fallback greedy
         }
-        
+
         double sum = 0.0;
         for (const auto& p : scored) {
             sum += p.second;
         }
-        
+
         if (sum == 0.0 || std::isnan(sum)) {
             return {scored[0].first};
         }
-        
+
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_real_distribution<> dis(0.0, 1.0);
-        
+
         double r = dis(gen);
         double cumsum = 0.0;
         for (const auto& p : scored) {
@@ -70,38 +77,46 @@ namespace sampling {
         }
         return {scored.back().first};
     }
-    
+
     // Top-P (Nucleus) sampling
     inline std::vector<int> top_p_sample(const std::vector<Value::Ptr>& logits,
                                          float p, float temperature = 1.0f) {
         if (logits.empty()) return {};
         if (p <= 0.0f) p = 1.0f;
         if (p >= 1.0f) return top_k_sample(logits, logits.size(), temperature);
-        
+
         std::vector<std::pair<int, double>> scored;
         scored.reserve(logits.size());
         for (size_t i = 0; i < logits.size(); ++i) {
-            scored.emplace_back(i, logits[i]->data);
+            scored.emplace_back(static_cast<int>(i), logits[i]->data);
         }
-        
-        if (temperature != 1.0f && temperature > 0.0f) {
+
+        // FIX: sama seperti top_k_sample -- exp() harus selalu jalan,
+        // bukan hanya saat temperature != 1.0. exp() monoton naik jadi
+        // urutan sort di bawah tidak terpengaruh; yang penting nilainya
+        // jadi bobot non-negatif yang valid untuk dinormalisasi.
+        if (temperature > 0.0f) {
             for (auto& pv : scored) {
                 pv.second = std::exp(pv.second / temperature);
             }
+        } else {
+            std::sort(scored.begin(), scored.end(),
+                      [](const auto& a, const auto& b) { return a.second > b.second; });
+            return {scored[0].first};  // temperature tidak valid -> fallback greedy
         }
-        
+
         std::sort(scored.begin(), scored.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
-        
+
         double sum = 0.0;
         for (const auto& pv : scored) {
             sum += pv.second;
         }
-        
+
         if (sum == 0.0 || std::isnan(sum)) {
             return {scored[0].first};
         }
-        
+
         // Normalize and find top-p
         double cumsum = 0.0;
         size_t idx = 0;
@@ -109,25 +124,25 @@ namespace sampling {
             cumsum += scored[idx].second / sum;
             if (cumsum >= p) break;
         }
-        
+
         if (idx < scored.size()) {
             scored.resize(idx + 1);
         }
-        
+
         // Re-normalize the selected tokens
         double new_sum = 0.0;
         for (const auto& pv : scored) {
             new_sum += pv.second;
         }
-        
+
         if (new_sum == 0.0) {
             return {scored[0].first};
         }
-        
+
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_real_distribution<> dis(0.0, 1.0);
-        
+
         double r = dis(gen);
         cumsum = 0.0;
         for (const auto& pv : scored) {
@@ -138,7 +153,7 @@ namespace sampling {
         }
         return {scored.back().first};
     }
-    
+
     // Batched sampling
     inline std::vector<int> batch_sample(const std::vector<std::vector<Value::Ptr>>& logits_batch,
                                          const std::string& method = "top_p",
@@ -147,7 +162,7 @@ namespace sampling {
                                          float top_p = 0.9f) {
         std::vector<int> results;
         results.reserve(logits_batch.size());
-        
+
         for (const auto& logits : logits_batch) {
             if (method == "greedy") {
                 results.push_back(greedy_sample(logits));
