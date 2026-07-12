@@ -5,7 +5,10 @@
 #include <stdexcept>
 #include <cassert>
 #include <functional>
-#include <cstdint>   // TAMBAHKAN
+#include <cstdint>
+#include <type_traits>   // FIX: dipakai untuk std::is_same_v -- sebelumnya
+                          // cuma dapat transitif dari simd.h, rapuh kalau
+                          // simd.h berubah di kemudian hari
 #include "simd.h"
 
 namespace tnsr {
@@ -35,14 +38,13 @@ public:
     return std::accumulate(shape.begin(), shape.end(), 1UL, std::multiplies<>());
   }
 
-  // ===== TAMBAHKAN: Operator untuk 2D (matrix) =====
   T& operator()(size_t i, size_t j) {
     if (shape.size() != 2) {
       throw std::runtime_error("Tensor is not 2D");
     }
     return data[i * strides[0] + j * strides[1]];
   }
-  
+
   const T& operator()(size_t i, size_t j) const {
     if (shape.size() != 2) {
       throw std::runtime_error("Tensor is not 2D");
@@ -50,14 +52,13 @@ public:
     return data[i * strides[0] + j * strides[1]];
   }
 
-  // ===== TAMBAHKAN: Operator untuk 1D (vector) =====
   T& operator()(size_t i) {
     if (shape.size() != 1) {
       throw std::runtime_error("Tensor is not 1D");
     }
     return data[i * strides[0]];
   }
-  
+
   const T& operator()(size_t i) const {
     if (shape.size() != 1) {
       throw std::runtime_error("Tensor is not 1D");
@@ -65,7 +66,6 @@ public:
     return data[i * strides[0]];
   }
 
-  // Indexing multi-dimensi (untuk dimensi > 2)
   T& operator()(const std::vector<size_t>& indices) {
     size_t offset = 0;
     for (size_t i = 0; i < indices.size(); ++i) {
@@ -73,7 +73,7 @@ public:
     }
     return data[offset];
   }
-  
+
   const T& operator()(const std::vector<size_t>& indices) const {
     size_t offset = 0;
     for (size_t i = 0; i < indices.size(); ++i) {
@@ -82,7 +82,6 @@ public:
     return data[offset];
   }
 
-  // ===== TAMBAHKAN: Operator += untuk Tensor =====
   Tensor& operator+=(const Tensor& other) {
     assert(shape == other.shape);
     for (size_t i = 0; i < data.size(); ++i) {
@@ -91,7 +90,6 @@ public:
     return *this;
   }
 
-  // ===== TAMBAHKAN: Operator *= untuk scalar =====
   Tensor& operator*=(const T& scalar) {
     for (size_t i = 0; i < data.size(); ++i) {
       data[i] *= scalar;
@@ -99,7 +97,6 @@ public:
     return *this;
   }
 
-  // Operator + (sudah ada)
   Tensor operator+(const Tensor& other) const {
     assert(shape == other.shape);
     Tensor result(shape);
@@ -107,7 +104,7 @@ public:
     const T* src2 = other.data.data();
     T* dst = result.data.data();
     size_t N = data.size();
-    
+
     if constexpr (std::is_same_v<T, float>) {
       constexpr size_t W = SIMD_FLOAT_WIDTH;
       size_t i = 0;
@@ -132,7 +129,6 @@ public:
     return result;
   }
 
-  // Operator - 
   Tensor operator-(const Tensor& other) const {
     assert(shape == other.shape);
     Tensor result(shape);
@@ -140,7 +136,7 @@ public:
     const T* src2 = other.data.data();
     T* dst = result.data.data();
     size_t N = data.size();
-    
+
     if constexpr (std::is_same_v<T, float>) {
       constexpr size_t W = SIMD_FLOAT_WIDTH;
       size_t i = 0;
@@ -165,7 +161,6 @@ public:
     return result;
   }
 
-  // Operator * (element-wise)
   Tensor operator*(const Tensor& other) const {
     assert(shape == other.shape);
     Tensor result(shape);
@@ -173,7 +168,7 @@ public:
     const T* src2 = other.data.data();
     T* dst = result.data.data();
     size_t N = data.size();
-    
+
     if constexpr (std::is_same_v<T, float>) {
       constexpr size_t W = SIMD_FLOAT_WIDTH;
       size_t i = 0;
@@ -198,7 +193,6 @@ public:
     return result;
   }
 
-  // Operator / (element-wise)
   Tensor operator/(const Tensor& other) const {
     assert(shape == other.shape);
     Tensor result(shape);
@@ -206,7 +200,7 @@ public:
     const T* src2 = other.data.data();
     T* dst = result.data.data();
     size_t N = data.size();
-    
+
     if constexpr (std::is_same_v<T, float>) {
       constexpr size_t W = SIMD_FLOAT_WIDTH;
       size_t i = 0;
@@ -242,7 +236,6 @@ private:
   }
 };
 
-// Contoh eksplisit instansiasi (deklarasi)
 extern template class Tensor<float>;
 extern template class Tensor<double>;
 
