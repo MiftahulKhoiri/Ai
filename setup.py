@@ -26,7 +26,7 @@ sources = [
     "minigpt/tokenizer.cpp",
     "minigpt/utils.cpp",
     "minigpt/value.cpp",
-    
+
     # New features (Tahap 1-10)
     "minigpt/config.cpp",           # Configuration system
     "minigpt/dataloader.cpp",       # DataLoader
@@ -38,6 +38,7 @@ sources = [
     "minigpt/test.cpp",             # Unit testing framework
     "minigpt/server.cpp",           # API server
     "minigpt/quantization.cpp",     # Quantization & pruning
+    "minigpt/mmap_ninja.cpp",       # Memory-mapped dataset loader
 ]
 
 # Cek file yang ada vs yang dibutuhkan
@@ -51,7 +52,7 @@ if missing_files:
     for f in missing_files:
         print(f"   - {f}")
     print("\n📝  File-file baru perlu dibuat. Build akan dilanjutkan dengan file yang ada.")
-    
+
     # Filter hanya file yang ada
     sources = [f for f in sources if os.path.exists(f)]
     if not sources:
