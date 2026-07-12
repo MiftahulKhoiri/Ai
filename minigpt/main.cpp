@@ -3,17 +3,16 @@
 #include <string>
 #include <fstream>
 #include <cstdlib>
-#include <filesystem>   // FIX: untuk cek keberadaan file checkpoint
+#include <filesystem>
 
+#include "main.h"
 #include "model.h"
 #include "tokenizer.h"
-#include "train.h"        // FIX: sumber alias "Tokenizer", load_checkpoint(), train()
-#include "generation.h"   // FIX: sumber definisi generate() yang sebenarnya (6 parameter)
+#include "train.h"
+#include "generation.h"
 #include "optim.h"
 #include "utils.h"
 
-// FIX: file_exists() sebelumnya dipanggil tapi tidak pernah didefinisikan
-// di manapun. Pakai std::filesystem (C++17) untuk cek keberadaan file.
 bool file_exists(const std::string& path) {
     return std::filesystem::exists(path);
 }
@@ -35,11 +34,10 @@ void print_usage(const char* prog) {
 }
 
 int main(int argc, char* argv[]) {
-    // Default values
     std::string mode = "train";
     std::string data_path = "data.txt";
     std::string ckpt_path = "model.bin";
-    std::string vocab_path = "vocab.json";   // FIX: satu file, bukan vocab.json + merges.txt
+    std::string vocab_path = "vocab.json";
     std::string prompt = "";
     int max_tokens = 50;
     int epochs = 10;
@@ -47,7 +45,6 @@ int main(int argc, char* argv[]) {
     double wd = 0.01;
     int warmup_steps = 100;
 
-    // Parsing argumen sederhana (manual)
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--mode" && i+1 < argc) mode = argv[++i];
@@ -68,11 +65,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Inisialisasi tokenizer
     Tokenizer tokenizer;
     try {
-        // FIX: load() cuma menerima SATU path (file JSON gabungan vocab +
-        // merge_order), bukan dua file terpisah gaya GPT-2 asli.
         if (!tokenizer.load(vocab_path)) {
             std::cerr << "Gagal memuat tokenizer dari " << vocab_path << "\n";
             return 1;
@@ -82,17 +76,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Konfigurasi model — ukuran kecil untuk eksperimen cepat
     int vocab_size = tokenizer.vocab_size();
-
-    // FIX: "d_model=128" dkk bukan named-argument C++ (itu sintaks
-    // Python). Di C++ ini di-parse sebagai assignment ke variabel
-    // "d_model" yang tidak pernah dideklarasikan -> gagal compile.
-    // Parameter harus dikirim positional sesuai urutan konstruktor
-    // MiniGPT di model.h: (vocab_size, d_model, n_heads, n_layers, d_ff, max_len, dropout)
     MiniGPT model(vocab_size, 128, 4, 4, 512, 512, 0.1);
 
-    // Jika checkpoint ada, muat
     if (file_exists(ckpt_path)) {
         std::cout << "Memuat checkpoint dari " << ckpt_path << "\n";
         load_checkpoint(model, ckpt_path);
@@ -101,9 +87,6 @@ int main(int argc, char* argv[]) {
     if (mode == "train") {
         train(model, tokenizer, data_path, ckpt_path, epochs, lr, wd, warmup_steps);
     } else if (mode == "generate") {
-        // FIX: pakai generate() asli dari generation.h (6 parameter,
-        // 2 dengan default), bukan deklarasi lokal 4-parameter yang
-        // tidak match simbol sebenarnya di generation.cpp.
         generate(model, tokenizer, prompt, max_tokens, /*add_bos=*/true, /*add_eos=*/false);
     } else {
         std::cerr << "Mode tidak valid: " << mode << "\n";
