@@ -77,10 +77,6 @@ std::vector<std::vector<ValuePtr>> Embedding::forward(const std::vector<int>& id
     for (int id : ids) {
         if (id < 0 || id >= vocab_size) {
             std::cerr << "[ERROR] Embedding: id " << id << " out of range (vocab size " << vocab_size << ")" << std::endl;
-            // Catatan: fallback ini membuat SATU Value dan menyalin shared_ptr-nya
-            // d_model kali -> semua elemen menunjuk ke node yang sama. Untuk kasus
-            // fallback (id invalid) dampaknya kecil, tapi perlu diwaspadai kalau
-            // pola serupa dipakai di tempat lain untuk data yang ikut backward.
             result.push_back(std::vector<ValuePtr>(d_model, Value::create(0.0)));
             continue;
         }
@@ -222,18 +218,12 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
                   << " not divisible by n_heads " << n_heads << std::endl;
         n_heads = 1;
         while (d_model % n_heads != 0) n_heads++;
-        // FIX: parameter lokal "n_heads" tadinya cuma menutupi (shadow) member
-        // this->n_heads yang sudah di-set dari initializer list. Assignment di
-        // atas hanya mengubah variabel lokal, bukan this->n_heads -- jadi kalau
-        // d_model tidak habis dibagi n_heads awal, member yang dipakai di
-        // forward() tetap nilai lama yang salah. Sinkronkan balik ke member:
         this->n_heads = n_heads;
     }
 
     int d_k = d_model / n_heads;
-    (void)d_k; // Suppress unused variable warning
+    (void)d_k;
 
-    // Initialize weights
     for (int i = 0; i < d_model * d_model; ++i) {
         weight_q.push_back(Value::create(random_normal(0, 0.02)));
         weight_k.push_back(Value::create(random_normal(0, 0.02)));
@@ -243,7 +233,6 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
         weight_o.push_back(Value::create(random_normal(0, 0.02)));
     }
 
-    // Initialize biases
     for (int i = 0; i < d_model; ++i) {
         bias_q.push_back(Value::create(0.0));
         bias_k.push_back(Value::create(0.0));
@@ -272,7 +261,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         return {};
     }
 
-    // Project to Q, K, V
     std::vector<std::vector<ValuePtr>> q(seq_len), k(seq_len), v(seq_len);
 
     for (int i = 0; i < seq_len; ++i) {
@@ -281,7 +269,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         v[i] = linear_forward(x[i], weight_v, bias_v);
     }
 
-    // Reshape for multi-head
     std::vector<std::vector<std::vector<ValuePtr>>> q_heads(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         q_heads[i].resize(n_heads);
@@ -296,7 +283,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
 
-    // K heads: [n_heads, seq_len, d_k]
     std::vector<std::vector<std::vector<ValuePtr>>> k_heads(n_heads);
     for (int h = 0; h < n_heads; ++h) {
         k_heads[h].resize(seq_len);
@@ -311,7 +297,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
 
-    // V heads: [seq_len, n_heads, d_k]
     std::vector<std::vector<std::vector<ValuePtr>>> v_heads(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         v_heads[i].resize(n_heads);
@@ -326,12 +311,10 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
 
-    // Compute attention
     std::vector<std::vector<std::vector<ValuePtr>>> attn_outputs(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         attn_outputs[i].resize(n_heads);
         for (int h = 0; h < n_heads; ++h) {
-            // Compute scores
             std::vector<ValuePtr> scores(seq_len);
             for (int j = 0; j < seq_len; ++j) {
                 ValuePtr dot = Value::create(0.0);
@@ -343,24 +326,17 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 scores[j] = dot;
             }
 
-            // Scale
             double scale = 1.0 / std::sqrt((double)d_k);
             for (auto& score : scores) {
                 score = score * Value::create(scale);
             }
 
-            // FIX: causal mask -- query di posisi i tidak boleh attend ke
-            // key di posisi j > i (mencegah model "curi lihat" token masa
-            // depan saat training). Wajib untuk model autoregressive/GPT.
+            // Causal mask: query i tidak boleh attend ke key j > i
             for (int j = i + 1; j < seq_len; ++j) {
                 scores[j] = scores[j] + Value::create(-1e9);
             }
 
-            // Apply padding mask
-            // FIX: cek pad_mask[j] (posisi KEY yang mau di-mask), bukan
-            // pad_mask[i] (posisi query). Sebelumnya kode mengecek posisi
-            // query, sehingga key padding tidak pernah ter-mask ketika
-            // query-nya sendiri bukan padding.
+            // Padding mask: mask posisi KEY yang padding
             if (!pad_mask.empty()) {
                 for (int j = 0; j < seq_len; ++j) {
                     if (j < (int)pad_mask.size() && pad_mask[j] == 1) {
@@ -369,13 +345,9 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 }
             }
 
-            // Softmax
             auto probs = softmax(scores);
-
-            // Apply dropout
             auto dropped_probs = attn_dropout.forward(probs);
 
-            // Apply to V
             std::vector<ValuePtr> out(d_k);
             for (int j = 0; j < d_k; ++j) {
                 out[j] = Value::create(0.0);
@@ -389,7 +361,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
 
-    // Concatenate heads
     std::vector<std::vector<ValuePtr>> concat(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         concat[i].reserve(d_model);
@@ -400,7 +371,6 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
         }
     }
 
-    // Final projection
     std::vector<std::vector<ValuePtr>> output(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         if (!concat[i].empty()) {
@@ -413,6 +383,84 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
     return output;
 }
 
+// BARU: attention untuk 1 token pakai KV-cache.
+// k_cache/v_cache berisi K/V (flat, d_model per entri) dari semua posisi
+// SEBELUM token ini. Token saat ini diproyeksikan, hasil K/V-nya
+// ditambahkan ke cache (jadi cache mencakup posisi 0..pos setelah return),
+// lalu Q token ini dibandingkan terhadap seluruh cache -- causal mask
+// otomatis terpenuhi karena cache cuma berisi posisi <= pos.
+std::vector<ValuePtr> MultiHeadSelfAttention::forward_incremental(
+    const std::vector<ValuePtr>& x_token,
+    std::vector<std::vector<ValuePtr>>& k_cache,
+    std::vector<std::vector<ValuePtr>>& v_cache) {
+
+    if (x_token.empty()) return {};
+
+    int d_model_local = x_token.size();
+    int d_k = d_model_local / n_heads;
+    if (d_k == 0) {
+        std::cerr << "[ERROR] Attention (incremental): d_k=0" << std::endl;
+        return {};
+    }
+
+    std::vector<ValuePtr> q = linear_forward(x_token, weight_q, bias_q);
+    std::vector<ValuePtr> k = linear_forward(x_token, weight_k, bias_k);
+    std::vector<ValuePtr> v = linear_forward(x_token, weight_v, bias_v);
+
+    if (q.empty() || k.empty() || v.empty()) return {};
+
+    // Simpan K/V token ini ke cache SEBELUM dipakai, supaya token ini
+    // juga bisa attend ke dirinya sendiri (posisi terakhir).
+    k_cache.push_back(k);
+    v_cache.push_back(v);
+
+    int seq_len = (int)k_cache.size();  // jumlah posisi yang sudah ada, termasuk token ini
+
+    std::vector<std::vector<ValuePtr>> q_heads(n_heads);
+    for (int h = 0; h < n_heads; ++h) {
+        q_heads[h].reserve(d_k);
+        for (int j = 0; j < d_k; ++j) {
+            int idx = h * d_k + j;
+            if (idx < (int)q.size()) q_heads[h].push_back(q[idx]);
+        }
+    }
+
+    double scale = 1.0 / std::sqrt((double)d_k);
+    std::vector<ValuePtr> concat;
+    concat.reserve(d_model_local);
+
+    for (int h = 0; h < n_heads; ++h) {
+        std::vector<ValuePtr> scores(seq_len);
+        for (int t = 0; t < seq_len; ++t) {
+            ValuePtr dot = Value::create(0.0);
+            for (int kk = 0; kk < d_k; ++kk) {
+                int idx = h * d_k + kk;
+                if (idx < (int)k_cache[t].size()) {
+                    dot = dot + (q_heads[h][kk] * k_cache[t][idx]);
+                }
+            }
+            scores[t] = dot * Value::create(scale);
+        }
+
+        auto probs = softmax(scores);
+        auto dropped_probs = attn_dropout.forward(probs);
+
+        std::vector<ValuePtr> out(d_k);
+        for (int j = 0; j < d_k; ++j) {
+            out[j] = Value::create(0.0);
+            for (int t = 0; t < seq_len; ++t) {
+                int idx = h * d_k + j;
+                if (t < (int)dropped_probs.size() && idx < (int)v_cache[t].size()) {
+                    out[j] = out[j] + (dropped_probs[t] * v_cache[t][idx]);
+                }
+            }
+        }
+        concat.insert(concat.end(), out.begin(), out.end());
+    }
+
+    return linear_forward(concat, weight_o, bias_o);
+}
+
 // ============================================================
 // FEED FORWARD
 // ============================================================
@@ -421,7 +469,6 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
     : d_model(d_model), d_ff(d_ff), dropout_p(dropout),
       ff_dropout(dropout) {
 
-    // Initialize weights
     for (int i = 0; i < d_model * d_ff; ++i) {
         w1.push_back(Value::create(random_normal(0, 0.02)));
     }
@@ -429,7 +476,6 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
         w2.push_back(Value::create(random_normal(0, 0.02)));
     }
 
-    // Initialize biases
     for (int i = 0; i < d_ff; ++i) {
         b1.push_back(Value::create(0.0));
     }
@@ -441,16 +487,12 @@ FeedForward::FeedForward(int d_model, int d_ff, double dropout)
 std::vector<ValuePtr> FeedForward::forward(const std::vector<ValuePtr>& x) {
     if (x.empty()) return {};
 
-    // First linear + GELU
     auto hidden = linear_forward(x, w1, b1);
     for (auto& v : hidden) {
         v = gelu(v);
     }
 
-    // Dropout
     auto dropped = ff_dropout.forward(hidden);
-
-    // Second linear
     auto output = linear_forward(dropped, w2, b2);
 
     return output;
@@ -474,11 +516,9 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
 
     if (x.empty()) return {};
 
-    // Self-attention with residual
     auto attn_out = attn.forward(x, pad_mask);
     if (attn_out.empty()) return {};
 
-    // Add residual and layer norm
     std::vector<std::vector<ValuePtr>> attn_residual(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         attn_residual[i].reserve(x[i].size());
@@ -491,19 +531,16 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
         }
     }
 
-    // Layer norm on residual
     std::vector<std::vector<ValuePtr>> norm1(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         norm1[i] = ln1.forward(attn_residual[i]);
     }
 
-    // Feed forward with residual
     std::vector<std::vector<ValuePtr>> ff_out(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         ff_out[i] = ff.forward(norm1[i]);
     }
 
-    // Add residual and layer norm
     std::vector<std::vector<ValuePtr>> ff_residual(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         ff_residual[i].reserve(x[i].size());
@@ -516,13 +553,39 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
         }
     }
 
-    // Final layer norm
     std::vector<std::vector<ValuePtr>> output(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         output[i] = ln2.forward(ff_residual[i]);
     }
 
     return output;
+}
+
+// BARU: versi 1-token dari block, memakai KV-cache attention di atas.
+std::vector<ValuePtr> TransformerBlock::forward_incremental(
+    const std::vector<ValuePtr>& x_token,
+    std::vector<std::vector<ValuePtr>>& k_cache,
+    std::vector<std::vector<ValuePtr>>& v_cache) {
+
+    if (x_token.empty()) return {};
+
+    auto attn_out = attn.forward_incremental(x_token, k_cache, v_cache);
+    if (attn_out.empty()) return {};
+
+    std::vector<ValuePtr> attn_residual(x_token.size());
+    for (size_t j = 0; j < x_token.size(); ++j) {
+        attn_residual[j] = (j < attn_out.size()) ? (x_token[j] + attn_out[j]) : x_token[j];
+    }
+
+    auto norm1 = ln1.forward(attn_residual);
+    auto ff_out = ff.forward(norm1);
+
+    std::vector<ValuePtr> ff_residual(x_token.size());
+    for (size_t j = 0; j < x_token.size(); ++j) {
+        ff_residual[j] = (j < ff_out.size()) ? (attn_residual[j] + ff_out[j]) : attn_residual[j];
+    }
+
+    return ln2.forward(ff_residual);
 }
 
 // ============================================================
@@ -532,12 +595,10 @@ std::vector<std::vector<ValuePtr>> TransformerBlock::forward(
 Linear::Linear(int in_features, int out_features) 
     : in_features(in_features), out_features(out_features) {
 
-    // Initialize weights
     for (int i = 0; i < in_features * out_features; ++i) {
         weight.push_back(Value::create(random_normal(0, 0.02)));
     }
 
-    // Initialize biases
     for (int i = 0; i < out_features; ++i) {
         bias.push_back(Value::create(0.0));
     }
