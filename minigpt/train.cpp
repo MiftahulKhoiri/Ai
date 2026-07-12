@@ -9,7 +9,14 @@
 #include <fstream>
 #include <vector>
 #include <random>
+#include <algorithm>   // FIX: wajib untuk std::shuffle
 #include <chrono>
+
+// FIX: tidak ada kelas C++ bernama "Tokenizer". Kelas yang benar-benar
+// ada di tokenizer.h/tokenizer.cpp adalah ByteLevelBPETokenizer. "Tokenizer"
+// cuma nama yang dipakai di sisi Python (bindings.cpp), bukan alias tipe
+// C++ -- jadi tanpa ini file tidak akan bisa dikompilasi.
+using Tokenizer = ByteLevelBPETokenizer;
 
 // Fungsi pembantu: baca file teks, enkode, dan potong menjadi sequence
 std::vector<std::vector<int>> load_dataset(const std::string& path, Tokenizer& tokenizer, int block_size) {
@@ -33,15 +40,12 @@ std::vector<std::vector<int>> load_dataset(const std::string& path, Tokenizer& t
 void save_checkpoint(const MiniGPT& model, const std::string& path) {
     std::ofstream file(path, std::ios::binary);
     auto params = model.parameters();
-    // Tulis jumlah parameter dulu
     uint32_t n = params.size();
     file.write(reinterpret_cast<const char*>(&n), sizeof(n));
     for (auto& p : params) {
-        // Asumsikan ValuePtr memiliki method data() mengembalikan pointer ke double
-        // dan size() mengembalikan jumlah elemen
-        uint32_t size = p->size(); // sesuaikan
-        file.write(reinterpret_cast<const char*>(&size), sizeof(size));
-        file.write(reinterpret_cast<const char*>(p->data()), size * sizeof(double));
+        // FIX: Value::data adalah member "double", bukan method. Tidak
+        // ada size() per-parameter karena tiap Value cuma 1 scalar.
+        file.write(reinterpret_cast<const char*>(&p->data), sizeof(double));
     }
     file.close();
 }
@@ -55,10 +59,8 @@ void load_checkpoint(MiniGPT& model, const std::string& path) {
     file.read(reinterpret_cast<char*>(&n), sizeof(n));
     if (n != params.size()) throw std::runtime_error("Jumlah parameter tidak cocok");
     for (auto& p : params) {
-        uint32_t size;
-        file.read(reinterpret_cast<char*>(&size), sizeof(size));
-        if (size != p->size()) throw std::runtime_error("Ukuran parameter tidak cocok");
-        file.read(reinterpret_cast<char*>(p->data()), size * sizeof(double));
+        // FIX: baca langsung ke member "data", bukan lewat method size()/data()
+        file.read(reinterpret_cast<char*>(&p->data), sizeof(double));
     }
     file.close();
 }
@@ -70,22 +72,27 @@ void train(MiniGPT& model, Tokenizer& tokenizer,
     std::cout << "Memulai training...\n";
     std::cout << "Model: d_model=" << model.d_model 
               << ", layers=" << model.blocks.size() 
-              << ", heads=" << model.blocks[0].attn.n_heads << "\n";  // perhatikan akses
+              << ", heads=" << model.blocks[0].attn.n_heads << "\n";
 
     // Siapkan optimizer
     auto params = model.parameters();
     AdamW optimizer(params, lr, 0.9, 0.999, 1e-8, wd, true);
 
-    // Scheduler warmup cosine
-    WarmupCosineScheduler scheduler(&optimizer, warmup_steps, epochs * 1000, lr, 1e-5);
-
-    // Load dataset
+    // Load dataset DULU, supaya total_steps yang sebenarnya diketahui
+    // sebelum scheduler dibuat.
     auto batches = load_dataset(data_path, tokenizer, model.max_len);
     std::cout << "Total batch: " << batches.size() << "\n";
 
+    int total_steps = epochs * static_cast<int>(batches.size());
+
+    // FIX: scheduler dibuat SETELAH total_steps asli diketahui, bukan
+    // pakai "epochs * 1000" yang asal-asalan. Sebelumnya scheduler
+    // dikonstruksi sebelum dataset di-load, jadi jadwal cosine-decay-nya
+    // hampir pasti tidak sinkron dengan durasi training yang sebenarnya.
+    WarmupCosineScheduler scheduler(&optimizer, warmup_steps, total_steps, lr, 1e-5);
+
     // Loop training
     int step = 0;
-    int total_steps = epochs * batches.size();
     for (int epoch = 0; epoch < epochs; ++epoch) {
         // Shuffle batch
         std::shuffle(batches.begin(), batches.end(), std::default_random_engine(std::random_device{}()));
@@ -102,8 +109,10 @@ void train(MiniGPT& model, Tokenizer& tokenizer,
             // Hitung loss
             ValuePtr loss = cross_entropy_loss(logits, target_ids, {}); // pad_mask kosong
 
-            // Backward
-            model.zero_grad(); // asumsikan ada method zero_grad
+            // FIX: MiniGPT tidak punya method zero_grad() sendiri (cek
+            // model.h) -- yang punya zero_grad() adalah AdamW, karena
+            // dia yang menyimpan referensi ke seluruh parameter model.
+            optimizer.zero_grad();
             loss->backward();
 
             // Clip grad (opsional)
@@ -115,7 +124,8 @@ void train(MiniGPT& model, Tokenizer& tokenizer,
 
             step++;
             if (step % 100 == 0) {
-                std::cout << "Step " << step << ", loss = " << loss->data() << ", lr = " << optimizer.lr << "\n";
+                // FIX: loss->data (member), bukan loss->data() (method)
+                std::cout << "Step " << step << ", loss = " << loss->data << ", lr = " << optimizer.lr << "\n";
             }
             if (step % 1000 == 0) {
                 save_checkpoint(model, ckpt_path);
