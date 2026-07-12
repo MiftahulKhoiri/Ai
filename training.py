@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# training.py - Script untuk training MiniGPT
+# training.py - Script untuk training MiniGPT (versi mmap_ninja)
 
 import sys
 import json
@@ -13,14 +13,16 @@ from typing import List, Tuple, Dict, Any
 # Import dari library minigpt
 from minigpt import (
     MiniGPT,
-    Tokenizer,  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
+    Tokenizer,
     AdamW,
     WarmupCosineScheduler,
     generate,
     cross_entropy_loss,
     clip_grad_norm,
     argmax,
-    Value
+    Value,
+    MMapDataset,          # <-- BARU: reader mmap_ninja
+    build_mmap_dataset,   # <-- BARU: writer mmap_ninja
 )
 
 # ============================================================
@@ -142,42 +144,46 @@ def build_dataset(tokenized: List[List[int]], seq_len: int, pad_id: int) -> List
                     examples.append(seq)
     return examples
 
-def iter_batches(examples: List[List[int]], batch_size: int, shuffle: bool = True):
+def iter_batches_mmap(dataset, batch_size: int, shuffle: bool = True):
+    """
+    Pengganti iter_batches() lama. Tidak pernah memegang seluruh
+    dataset di RAM Python — cuma daftar index (int biasa, murah),
+    lalu dataset.get_batch() memicu OS memuat halaman yang dibutuhkan
+    saja dari mmap file.
+    """
+    n = dataset.size()
+    indices = list(range(n))
     if shuffle:
-        indices = list(range(len(examples)))
         random.shuffle(indices)
-    else:
-        indices = list(range(len(examples)))
-    
-    for i in range(0, len(indices), batch_size):
+
+    for i in range(0, n, batch_size):
         batch_indices = indices[i:i + batch_size]
-        batch = [examples[idx] for idx in batch_indices if idx < len(examples)]
-        if batch:
-            yield batch
+        if batch_indices:
+            yield dataset.get_batch(batch_indices)
 
 def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
     total_loss = 0.0
     n_samples = 0
-    
+
     optimizer.zero_grad()
-    
+
     for seq in batch:
         if len(seq) < 2:
             continue
-        
+
         input_ids = seq[:-1]
         target_ids = seq[1:]
-        
+
         logits = model.forward(input_ids)
         loss = cross_entropy_loss(logits, target_ids, [])
-        
+
         if n_samples == 0:
             total_loss_value = loss
         else:
             total_loss_value = loss
-        
+
         n_samples += 1
-    
+
     if n_samples > 0:
         total_loss_value.backward()
         params = model.parameters()
@@ -186,7 +192,7 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
         if scheduler:
             scheduler.step()
         return total_loss_value.data, grad_norm
-    
+
     return 0.0, 0.0
 
 # ============================================================
@@ -208,29 +214,29 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
         't': 0,
         'lr': 0
     }
-    
+
     if model:
         params = model.parameters()
         checkpoint['params'] = [p.data for p in params]
-    
+
     if optimizer:
         checkpoint['m'] = optimizer.get_m()
         checkpoint['v'] = optimizer.get_v()
         checkpoint['t'] = optimizer.get_t()
         checkpoint['lr'] = optimizer.lr
-    
+
     if scheduler:
         checkpoint['scheduler_step'] = scheduler.get_step_num()
-    
+
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(checkpoint, f, indent=2, ensure_ascii=False)
 
 def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
     with open(path, 'r', encoding='utf-8') as f:
         checkpoint = json.load(f)
-    
+
     # Restore tokenizer
-    tokenizer = Tokenizer()  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
+    tokenizer = Tokenizer()
     if 'vocab' in checkpoint and checkpoint['vocab']:
         vocab = {k: v for k, v in checkpoint['vocab'].items()}
         inv_vocab = {int(k): v for k, v in checkpoint['inv_vocab'].items()}
@@ -238,7 +244,7 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         tokenizer.set_vocab(vocab)
         tokenizer.set_inv_vocab(inv_vocab)
         tokenizer.set_merge_order(merge_order)
-    
+
     config = checkpoint.get('config', {})
     vocab_size = config.get('vocab_size', len(tokenizer.get_vocab()))
     d_model = config.get('d_model', D_MODEL)
@@ -247,7 +253,7 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
     d_ff = config.get('d_ff', D_FF)
     max_len = config.get('max_len', MAX_LEN)
     dropout = config.get('dropout', DROPOUT)
-    
+
     model = MiniGPT(
         vocab_size=vocab_size,
         d_model=d_model,
@@ -257,17 +263,17 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         max_len=max_len,
         dropout=dropout
     )
-    
+
     if 'params' in checkpoint and checkpoint['params']:
         params = model.parameters()
         for i, p in enumerate(params):
             if i < len(checkpoint['params']):
                 p.data = checkpoint['params'][i]
-    
+
     params = model.parameters()
     lr = checkpoint.get('lr', LR)
     optimizer = AdamW(params, lr=lr, weight_decay=0.01)
-    
+
     if 'm' in checkpoint and checkpoint['m']:
         optimizer.set_m(checkpoint['m'])
     if 'v' in checkpoint and checkpoint['v']:
@@ -276,10 +282,10 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         optimizer.set_t(checkpoint['t'])
     if 'lr' in checkpoint:
         optimizer.lr = checkpoint['lr']
-    
+
     scheduler_step = checkpoint.get('scheduler_step', 0)
     total_steps = scheduler_step + additional_steps
-    
+
     scheduler = WarmupCosineScheduler(
         optimizer,
         warmup_steps=warmup_steps,
@@ -288,9 +294,9 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         min_lr=min_lr
     )
     scheduler.set_step_num(scheduler_step)
-    
+
     print(f"✅ Checkpoint loaded: step={scheduler_step}, total_steps={total_steps}")
-    
+
     return model, optimizer, scheduler, tokenizer, config, total_steps
 
 def test_generate(model, tokenizer):
@@ -368,7 +374,7 @@ def main():
         print(f"  Total karakter corpus : {len(corpus)}")
         print(f"  Target vocab size     : {VOCAB_SIZE}")
         t0 = time.time()
-        tokenizer = Tokenizer()  # <-- PERUBAHAN: ByteLevelBPETokenizer → Tokenizer
+        tokenizer = Tokenizer()
         tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
         print(f"  Tokenizer selesai     : {format_time(time.time()-t0)}")
         print(f"  Vocab size aktual     : {len(tokenizer.get_vocab())}")
@@ -393,12 +399,31 @@ def main():
     print(f"  Rata-rata token     : {avg_tokens:.1f} token/kalimat")
     print(f"  SEQ_LEN             : {SEQ_LEN}")
     print(f"  pad_id              : {pad_id}")
+
     examples = build_dataset(tokenized, SEQ_LEN, pad_id)
-    print(f"  Contoh training     : {len(examples)}")
-    if len(examples) == 0:
+    n_examples = len(examples)
+    print(f"  Contoh training     : {n_examples}")
+    if n_examples == 0:
         print("  ❌ Tidak ada contoh training! Periksa SEQ_LEN dan data.")
         return
     print_memory_info("SETELAH BUILD DATASET")
+
+    # --- mmap_ninja: tulis examples ke disk, lalu buang dari RAM Python ---
+    print("\n" + "="*60)
+    print("💽 3b. MENULIS DATASET KE MMAP FILE")
+    print("="*60)
+    mmap_path = os.path.splitext(os.path.basename(data_file))[0] + f".seq{SEQ_LEN}.mmpn"
+    t0 = time.time()
+    build_mmap_dataset(mmap_path, examples, SEQ_LEN)
+    print(f"  File mmap      : {mmap_path}")
+    print(f"  Waktu tulis    : {format_time(time.time()-t0)}")
+    size_mb = os.path.getsize(mmap_path) / (1024*1024)
+    print(f"  Ukuran file    : {size_mb:.2f} MB")
+
+    del examples  # buang list Python besar dari RAM; sisa akses lewat mmap
+    dataset = MMapDataset(mmap_path)
+    print(f"  Dataset dimuat : {dataset.size()} contoh, seq_len={dataset.seq_len()} (via mmap)")
+    print_memory_info("SETELAH BUILD MMAP DATASET")
 
     # 4. Inisialisasi model
     if not resume_checkpoint:
@@ -455,8 +480,8 @@ def main():
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
-    total_batches = max(1, len(examples) // BATCH_SIZE)
-    print(f"  Dataset       : {len(examples)} contoh")
+    total_batches = max(1, dataset.size() // BATCH_SIZE)
+    print(f"  Dataset       : {dataset.size()} contoh (mmap: {mmap_path})")
     print(f"  Batch size    : {BATCH_SIZE}")
     print(f"  Batch/epoch   : {total_batches}")
     print(f"  Epochs        : {EPOCHS}")
@@ -476,7 +501,7 @@ def main():
         n_batches = 0
         print(f"Epoch {epoch}/{EPOCHS}")
 
-        for batch in iter_batches(examples, BATCH_SIZE, shuffle=True):
+        for batch in iter_batches_mmap(dataset, BATCH_SIZE, shuffle=True):
             if len(batch) == 0:
                 continue
             loss, grad_norm = train_batch(model, optimizer, batch, scheduler=scheduler,
