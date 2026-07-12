@@ -64,8 +64,6 @@ std::vector<ValuePtr> linear_forward(
 
 Embedding::Embedding(int vocab_size, int d_model) 
     : vocab_size(vocab_size), d_model(d_model) {
-    // FIX: alokasi flat vocab_size * d_model, bukan cuma vocab_size.
-    // Tiap token butuh vector sepanjang d_model, bukan 1 scalar.
     weight.reserve((size_t)vocab_size * d_model);
     for (int i = 0; i < vocab_size * d_model; ++i) {
         weight.push_back(Value::create(random_normal(0, 0.02)));
@@ -79,6 +77,10 @@ std::vector<std::vector<ValuePtr>> Embedding::forward(const std::vector<int>& id
     for (int id : ids) {
         if (id < 0 || id >= vocab_size) {
             std::cerr << "[ERROR] Embedding: id " << id << " out of range (vocab size " << vocab_size << ")" << std::endl;
+            // Catatan: fallback ini membuat SATU Value dan menyalin shared_ptr-nya
+            // d_model kali -> semua elemen menunjuk ke node yang sama. Untuk kasus
+            // fallback (id invalid) dampaknya kecil, tapi perlu diwaspadai kalau
+            // pola serupa dipakai di tempat lain untuk data yang ikut backward.
             result.push_back(std::vector<ValuePtr>(d_model, Value::create(0.0)));
             continue;
         }
@@ -220,6 +222,12 @@ MultiHeadSelfAttention::MultiHeadSelfAttention(int d_model, int n_heads, double 
                   << " not divisible by n_heads " << n_heads << std::endl;
         n_heads = 1;
         while (d_model % n_heads != 0) n_heads++;
+        // FIX: parameter lokal "n_heads" tadinya cuma menutupi (shadow) member
+        // this->n_heads yang sudah di-set dari initializer list. Assignment di
+        // atas hanya mengubah variabel lokal, bukan this->n_heads -- jadi kalau
+        // d_model tidak habis dibagi n_heads awal, member yang dipakai di
+        // forward() tetap nilai lama yang salah. Sinkronkan balik ke member:
+        this->n_heads = n_heads;
     }
 
     int d_k = d_model / n_heads;
@@ -341,10 +349,21 @@ std::vector<std::vector<ValuePtr>> MultiHeadSelfAttention::forward(
                 score = score * Value::create(scale);
             }
 
-            // Apply mask
+            // FIX: causal mask -- query di posisi i tidak boleh attend ke
+            // key di posisi j > i (mencegah model "curi lihat" token masa
+            // depan saat training). Wajib untuk model autoregressive/GPT.
+            for (int j = i + 1; j < seq_len; ++j) {
+                scores[j] = scores[j] + Value::create(-1e9);
+            }
+
+            // Apply padding mask
+            // FIX: cek pad_mask[j] (posisi KEY yang mau di-mask), bukan
+            // pad_mask[i] (posisi query). Sebelumnya kode mengecek posisi
+            // query, sehingga key padding tidak pernah ter-mask ketika
+            // query-nya sendiri bukan padding.
             if (!pad_mask.empty()) {
                 for (int j = 0; j < seq_len; ++j) {
-                    if (i < (int)pad_mask.size() && pad_mask[i] == 1) {
+                    if (j < (int)pad_mask.size() && pad_mask[j] == 1) {
                         scores[j] = scores[j] + Value::create(-1e9);
                     }
                 }
