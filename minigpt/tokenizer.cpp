@@ -68,9 +68,7 @@ void ByteLevelBPETokenizer::init_byte_maps() {
     std::unordered_set<int> printable_bytes;
     printable_bytes.reserve(256);
 
-    // ASCII printable (33-126)
     for (int b = '!'; b <= '~'; ++b) printable_bytes.insert(b);
-    // Latin-1 Supplement printable (161-172, 174-255)
     for (int b = 0xA1; b <= 0xAC; ++b) printable_bytes.insert(b);
     for (int b = 0xAE; b <= 0xFF; ++b) printable_bytes.insert(b);
 
@@ -86,7 +84,6 @@ void ByteLevelBPETokenizer::init_byte_maps() {
         }
     }
 
-    // Build decoder
     BYTE_DECODER.clear();
     BYTE_DECODER.reserve(256);
     for (int b = 0; b < 256; ++b) {
@@ -129,7 +126,6 @@ std::string ByteLevelBPETokenizer::escape_json(const std::string& str) const {
 // TRAIN
 // ============================================================
 void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
-    // VALIDASI INPUT
     if (corpus.empty()) {
         std::cerr << "⚠️ Warning: Corpus kosong, menggunakan vocab minimal" << std::endl;
         vocab.clear();
@@ -149,7 +145,6 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         vocab_size = SPECIAL_TOKEN_COUNT + 10;
     }
 
-    // Tokenisasi dengan regex iterator
     std::vector<std::vector<std::string>> words;
     std::sregex_iterator it(corpus.begin(), corpus.end(), PRETOKEN_PAT);
     std::sregex_iterator end;
@@ -184,19 +179,16 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         return;
     }
 
-    // Hitung frekuensi
     std::unordered_map<std::vector<std::string>, int, vector_hash> freq;
     for (auto& w : words) {
         freq[std::move(w)]++;
     }
 
-    // Inisialisasi splits
     std::unordered_map<std::vector<std::string>, std::vector<std::string>, vector_hash> splits;
     for (const auto& p : freq) {
         splits.emplace(p.first, p.first);
     }
 
-    // Hitung base vocabulary size
     std::set<std::string> base_vocab;
     for (const auto& enc : BYTE_ENCODER) {
         base_vocab.insert(enc);
@@ -209,7 +201,6 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
     merge_rank.reserve(num_merges);
 
     for (int step = 0; step < num_merges; ++step) {
-        // Hitung frekuensi pasangan
         std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> pair_counts;
         pair_counts.reserve(freq.size() * 5);
 
@@ -222,9 +213,18 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
 
         if (pair_counts.empty()) break;
 
-        // Cari pasangan paling sering
+        // FIX: tambah tie-breaker deterministik. Sebelumnya kalau ada
+        // beberapa pair dengan frekuensi sama persis, max_element memilih
+        // yang mana saja tergantung urutan iterasi unordered_map (beda
+        // tiap run walau corpus sama) -> hasil training tokenizer tidak
+        // reproducible. Sekarang kalau frekuensi sama, menangkan pair yang
+        // secara leksikografis lebih besar -- aturan tetap, hasil selalu
+        // sama untuk corpus yang sama.
         auto best = std::max_element(pair_counts.begin(), pair_counts.end(),
-            [](const auto& a, const auto& b) { return a.second < b.second; });
+            [](const auto& a, const auto& b) {
+                if (a.second != b.second) return a.second < b.second;
+                return a.first > b.first;
+            });
 
         if (best->second < 2) break;
 
@@ -233,7 +233,6 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         merge_order.emplace_back(best_pair);
         merge_rank[best_pair] = step;
 
-        // Merge di semua kata
         for (auto& wf : freq) {
             auto& syms = splits[wf.first];
             std::vector<std::string> new_syms;
@@ -254,18 +253,15 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         }
     }
 
-    // Build vocabulary
     std::vector<std::string> specials = {PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN};
     std::vector<std::string> all_tokens;
     all_tokens.reserve(specials.size() + base_vocab.size() + merge_order.size());
     all_tokens = specials;
 
-    // Tambahkan base vocab
     for (const auto& s : base_vocab) {
         all_tokens.emplace_back(s);
     }
 
-    // Tambahkan merged tokens
     std::unordered_set<std::string> merged_set;
     merged_set.reserve(merge_order.size());
     for (const auto& p : merge_order) {
@@ -275,14 +271,12 @@ void ByteLevelBPETokenizer::train(const std::string& corpus, int vocab_size) {
         all_tokens.emplace_back(s);
     }
 
-    // Sort dan hapus duplikat
     std::sort(all_tokens.begin() + SPECIAL_TOKEN_COUNT, all_tokens.end());
     all_tokens.erase(
         std::unique(all_tokens.begin() + SPECIAL_TOKEN_COUNT, all_tokens.end()),
         all_tokens.end()
     );
 
-    // Buat mappings
     vocab.clear();
     inv_vocab.clear();
     for (size_t i = 0; i < all_tokens.size(); ++i) {
@@ -440,10 +434,8 @@ bool ByteLevelBPETokenizer::save(const std::string& path) const {
         return false;
     }
 
-    // Tulis JSON dengan format yang benar
     f << "{\n";
 
-    // Vocab section
     f << "  \"vocab\": {\n";
     size_t count = 0;
     for (const auto& p : vocab) {
@@ -453,7 +445,6 @@ bool ByteLevelBPETokenizer::save(const std::string& path) const {
     }
     f << "\n  },\n";
 
-    // Merge order section
     f << "  \"merge_order\": [\n";
     count = 0;
     for (const auto& p : merge_order) {
@@ -465,12 +456,12 @@ bool ByteLevelBPETokenizer::save(const std::string& path) const {
 
     f << "}\n";
     f.close();
-    
+
     if (!f.good()) {
         std::cerr << "❌ Error: Failed to write tokenizer file: " << path << std::endl;
         return false;
     }
-    
+
     std::cout << "✅ Tokenizer saved to: " << path << std::endl;
     return true;
 }
@@ -503,7 +494,6 @@ bool ByteLevelBPETokenizer::load(const std::string& path) {
     merge_order.clear();
     merge_rank.clear();
 
-    // Parser JSON sederhana
     auto find_json_string = [](const std::string& str, size_t start, std::string& result) -> size_t {
         if (start >= str.size() || str[start] != '"') return std::string::npos;
 
@@ -549,7 +539,6 @@ bool ByteLevelBPETokenizer::load(const std::string& path) {
         return std::string::npos;
     };
 
-    // Parse vocab
     size_t pos = content.find("\"vocab\"");
     if (pos != std::string::npos) {
         pos = content.find('{', pos);
@@ -582,7 +571,6 @@ bool ByteLevelBPETokenizer::load(const std::string& path) {
         }
     }
 
-    // Parse merge_order
     pos = content.find("\"merge_order\"");
     if (pos != std::string::npos) {
         pos = content.find('[', pos);
@@ -678,7 +666,6 @@ uint32_t decode_utf8_char(const std::string& str, size_t& i, int& bytes_consumed
         codepoint = (codepoint << 6) | (cont & 0x3F);
     }
 
-    // Validasi overlong encoding
     if ((seq_len == 2 && codepoint < 0x80) ||
         (seq_len == 3 && codepoint < 0x800) ||
         (seq_len == 4 && codepoint < 0x10000)) {
@@ -686,13 +673,11 @@ uint32_t decode_utf8_char(const std::string& str, size_t& i, int& bytes_consumed
         return 0xFFFD;
     }
 
-    // Validasi surrogate pairs
     if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
         bytes_consumed = seq_len;
         return 0xFFFD;
     }
 
-    // Validasi maximum code point
     if (codepoint > 0x10FFFF) {
         bytes_consumed = seq_len;
         return 0xFFFD;
