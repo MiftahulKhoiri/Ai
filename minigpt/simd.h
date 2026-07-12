@@ -1,6 +1,5 @@
 // simd.h
 #pragma once
-#include <cstdint>   // TAMBAHKAN
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
@@ -168,13 +167,30 @@ struct double_vec {
     inline float_vec sub(float_vec a, float_vec b) { return _mm256_sub_ps(a.v, b.v); }
     inline float_vec mul(float_vec a, float_vec b) { return _mm256_mul_ps(a.v, b.v); }
     inline float_vec div(float_vec a, float_vec b) { return _mm256_div_ps(a.v, b.v); }
-    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm256_fmadd_ps(a.v, b.v, c.v); }
+    // FIX: _mm256_fmadd_ps butuh FMA3 (-mfma). __AVX2__ tidak menjamin
+    // __FMA__ ikut aktif tergantung flag compiler yang dipakai. Cek
+    // eksplisit, fallback ke mul+add manual kalau FMA tidak tersedia
+    // (hasil matematis identik, cuma tanpa 1 instruksi fused).
+    #if defined(__FMA__)
+        inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm256_fmadd_ps(a.v, b.v, c.v); }
+    #else
+        inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm256_add_ps(_mm256_mul_ps(a.v, b.v), c.v); }
+    #endif
 #elif defined(USE_SSE)
     inline float_vec add(float_vec a, float_vec b) { return _mm_add_ps(a.v, b.v); }
     inline float_vec sub(float_vec a, float_vec b) { return _mm_sub_ps(a.v, b.v); }
     inline float_vec mul(float_vec a, float_vec b) { return _mm_mul_ps(a.v, b.v); }
     inline float_vec div(float_vec a, float_vec b) { return _mm_div_ps(a.v, b.v); }
-    inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm_fmadd_ps(a.v, b.v, c.v); }
+    // FIX: _mm_fmadd_ps adalah intrinsic FMA3, BUKAN bagian SSE3/SSE4.1.
+    // Header <smmintrin.h> yang di-include di jalur ini tidak
+    // mendeklarasikannya. Banyak CPU x86 punya SSE4.1 tapi tidak punya
+    // FMA3 (mis. sebagian Sandy/Ivy Bridge, sebagian Atom) -> gagal
+    // compile total di jalur ini sebelumnya. Cek __FMA__ eksplisit.
+    #if defined(__FMA__)
+        inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm_fmadd_ps(a.v, b.v, c.v); }
+    #else
+        inline float_vec fmadd(float_vec a, float_vec b, float_vec c) { return _mm_add_ps(_mm_mul_ps(a.v, b.v), c.v); }
+    #endif
 #elif defined(USE_NEON)
     inline float_vec add(float_vec a, float_vec b) { return vaddq_f32(a.v, b.v); }
     inline float_vec sub(float_vec a, float_vec b) { return vsubq_f32(a.v, b.v); }
@@ -218,13 +234,23 @@ struct double_vec {
     inline double_vec sub(double_vec a, double_vec b) { return _mm256_sub_pd(a.v, b.v); }
     inline double_vec mul(double_vec a, double_vec b) { return _mm256_mul_pd(a.v, b.v); }
     inline double_vec div(double_vec a, double_vec b) { return _mm256_div_pd(a.v, b.v); }
-    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm256_fmadd_pd(a.v, b.v, c.v); }
+    #if defined(__FMA__)
+        inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm256_fmadd_pd(a.v, b.v, c.v); }
+    #else
+        inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm256_add_pd(_mm256_mul_pd(a.v, b.v), c.v); }
+    #endif
 #elif defined(USE_SSE)
     inline double_vec add(double_vec a, double_vec b) { return _mm_add_pd(a.v, b.v); }
     inline double_vec sub(double_vec a, double_vec b) { return _mm_sub_pd(a.v, b.v); }
     inline double_vec mul(double_vec a, double_vec b) { return _mm_mul_pd(a.v, b.v); }
     inline double_vec div(double_vec a, double_vec b) { return _mm_div_pd(a.v, b.v); }
-    inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm_fmadd_pd(a.v, b.v, c.v); }
+    // FIX: sama seperti float_vec fmadd di atas -- _mm_fmadd_pd butuh
+    // FMA3, tidak dijamin ada walau SSE4.1/SSE3 aktif.
+    #if defined(__FMA__)
+        inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm_fmadd_pd(a.v, b.v, c.v); }
+    #else
+        inline double_vec fmadd(double_vec a, double_vec b, double_vec c) { return _mm_add_pd(_mm_mul_pd(a.v, b.v), c.v); }
+    #endif
 #elif defined(USE_NEON)
     inline double_vec add(double_vec a, double_vec b) { return vaddq_f64(a.v, b.v); }
     inline double_vec sub(double_vec a, double_vec b) { return vsubq_f64(a.v, b.v); }
