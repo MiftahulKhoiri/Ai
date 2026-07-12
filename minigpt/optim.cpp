@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <memory>
 #include <iostream>
 
 // ============================================================
@@ -34,24 +35,28 @@ std::vector<ValuePtr> softmax(const std::vector<ValuePtr>& x) {
         result.push_back(prob);
     }
 
-    // Backward untuk softmax
-    for (size_t i = 0; i < x.size(); ++i) {
-        result[i]->_backward = [result, x, i]() {
-            double grad = result[i]->grad;
-            for (size_t j = 0; j < x.size(); ++j) {
+    // FIX: capture shared_ptr ke vector (1 salinan data dibagi semua
+    // closure) alih-alih capture vector by value (setiap closure bikin
+    // salinan penuh -> memori O(n^2) untuk n elemen). Dengan shared_ptr,
+    // total memori jadi O(n) lagi, dan tidak ada N kali refcount atomic
+    // increment/decrement per elemen shared_ptr di dalam vector.
+    auto result_shared = std::make_shared<std::vector<ValuePtr>>(result);
+    auto x_shared = std::make_shared<std::vector<ValuePtr>>(x);
+
+    for (size_t i = 0; i < result_shared->size(); ++i) {
+        (*result_shared)[i]->_backward = [result_shared, x_shared, i]() {
+            double grad = (*result_shared)[i]->grad;
+            for (size_t j = 0; j < x_shared->size(); ++j) {
                 double delta = (i == j) ? 1.0 : 0.0;
-                double p_i = result[i]->data;
-                double p_j = result[j]->data;
-                x[j]->grad += grad * p_i * (delta - p_j);
+                double p_i = (*result_shared)[i]->data;
+                double p_j = (*result_shared)[j]->data;
+                (*x_shared)[j]->grad += grad * p_i * (delta - p_j);
             }
         };
-
-        // FIX: _prev harus menunjuk ke seluruh x, bukan dibiarkan dari
-        // operator '/' (yang menunjuk ke node exps[i]/sum, terputus dari x).
-        result[i]->_prev = x;
+        (*result_shared)[i]->_prev = *x_shared;
     }
 
-    return result;
+    return *result_shared;
 }
 
 // ============================================================
@@ -76,23 +81,26 @@ std::vector<ValuePtr> log_softmax(const std::vector<ValuePtr>& x) {
 
     for (size_t i = 0; i < x.size(); ++i) {
         double log_val = x[i]->data - max_val - log_sum;
-        auto v = Value::create(log_val);
+        result.push_back(Value::create(log_val));
+    }
 
-        v->_backward = [v, x, i, max_val, sum]() {
+    // FIX: sama seperti softmax() — capture shared_ptr ke x, bukan x
+    // itu sendiri, supaya seluruh closure berbagi 1 salinan vector
+    // (O(n) memori total), bukan masing-masing punya salinan sendiri
+    // (O(n^2)).
+    auto x_shared = std::make_shared<std::vector<ValuePtr>>(x);
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        auto v = result[i];
+        v->_backward = [v, x_shared, i, max_val, sum]() {
             double grad = v->grad;
-            for (size_t j = 0; j < x.size(); ++j) {
+            for (size_t j = 0; j < x_shared->size(); ++j) {
                 double delta = (i == j) ? 1.0 : 0.0;
-                double softmax_j = std::exp(x[j]->data - max_val) / sum;
-                x[j]->grad += grad * (delta - softmax_j);
+                double softmax_j = std::exp((*x_shared)[j]->data - max_val) / sum;
+                (*x_shared)[j]->grad += grad * (delta - softmax_j);
             }
         };
-
-        // FIX: _prev harus eksplisit menunjuk ke seluruh x, karena v
-        // dibuat sebagai leaf baru via Value::create() dan tidak
-        // otomatis terhubung ke x.
-        v->_prev = std::vector<ValuePtr>(x.begin(), x.end());
-
-        result.push_back(v);
+        v->_prev = *x_shared;
     }
 
     return result;
@@ -123,9 +131,16 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
         if (target < (int)log_probs.size()) {
             auto neg_log = Value::create(-log_probs[target]->data);
             neg_log->_prev = {log_probs[target]};
-            neg_log->_backward = [neg_log, log_probs, target]() {
+
+            // FIX: hanya capture elemen yang dipakai (satu ValuePtr,
+            // bukan seluruh vector log_probs sepanjang vocab_size).
+            // Sebelumnya lambda meng-capture "log_probs" utuh padahal
+            // cuma butuh log_probs[target] — pemborosan O(vocab_size)
+            // per posisi yang tidak perlu.
+            ValuePtr target_log_prob = log_probs[target];
+            neg_log->_backward = [neg_log, target_log_prob]() {
                 double grad = neg_log->grad;
-                log_probs[target]->grad += -grad;
+                target_log_prob->grad += -grad;
             };
             losses.push_back(neg_log);
         }
@@ -141,11 +156,15 @@ ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq
     }
     double avg = sum / losses.size();
 
+    // FIX: sama — bungkus losses dengan shared_ptr supaya closure
+    // result tidak menyimpan salinan vector losses secara terpisah.
+    auto losses_shared = std::make_shared<std::vector<ValuePtr>>(losses);
+
     auto result = Value::create(avg);
-    result->_prev = losses;
-    result->_backward = [result, losses]() {
-        double grad = result->grad / losses.size();
-        for (auto& loss : losses) {
+    result->_prev = *losses_shared;
+    result->_backward = [result, losses_shared]() {
+        double grad = result->grad / losses_shared->size();
+        for (auto& loss : *losses_shared) {
             loss->grad += grad;
         }
     };
