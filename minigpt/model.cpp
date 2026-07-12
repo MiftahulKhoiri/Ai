@@ -24,13 +24,11 @@ MiniGPT::MiniGPT(
     ln_f(d_model),
     head(d_model, vocab_size) {
 
-    // Create transformer blocks
     blocks.reserve(n_layers);
     for (int i = 0; i < n_layers; ++i) {
         blocks.emplace_back(d_model, n_heads, d_ff, dropout, max_len);
     }
 
-    // Initialize cache
     caches.clear();
     caches.resize(n_layers);
     for (auto& cache : caches) {
@@ -58,22 +56,16 @@ std::vector<std::vector<ValuePtr>> MiniGPT::forward(
         seq_len = max_len;
     }
 
-    // 1. Token embeddings — sekarang mengembalikan [seq_len][d_model]
     std::vector<std::vector<ValuePtr>> emb = embed.forward(token_ids);
     if (emb.empty()) {
         return {};
     }
 
-    // 2. Positional embeddings (flat: seq_len * d_model)
     std::vector<ValuePtr> pos = pos_embed.forward(seq_len);
     if (pos.empty()) {
         return {};
     }
 
-    // 3. Add token and positional embeddings
-    // FIX: sebelumnya x[i][j] selalu diisi Value::create(0.0) di kedua
-    // cabang if/else, sehingga emb dan pos tidak pernah benar-benar
-    // dipakai dan graph terputus total sejak awal forward pass.
     std::vector<std::vector<ValuePtr>> x(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         x[i].reserve(d_model);
@@ -87,12 +79,10 @@ std::vector<std::vector<ValuePtr>> MiniGPT::forward(
         }
     }
 
-    // 4. Apply dropout
     for (int i = 0; i < seq_len; ++i) {
         x[i] = embed_drop.forward(x[i]);
     }
 
-    // 5. Pass through transformer blocks
     std::vector<int> mask = pad_mask;
     if (mask.empty()) {
         mask.resize(seq_len, 0);
@@ -105,12 +95,10 @@ std::vector<std::vector<ValuePtr>> MiniGPT::forward(
         }
     }
 
-    // 6. Final layer norm
     for (int i = 0; i < seq_len; ++i) {
         x[i] = ln_f.forward(x[i]);
     }
 
-    // 7. Final linear projection
     std::vector<std::vector<ValuePtr>> logits(seq_len);
     for (int i = 0; i < seq_len; ++i) {
         logits[i] = head.forward(x[i]);
@@ -127,25 +115,19 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
     int token_id,
     int pos) {
 
-    // Token embedding — sekarang [1][d_model]
     std::vector<int> ids = {token_id};
     std::vector<std::vector<ValuePtr>> emb = embed.forward(ids);
     if (emb.empty()) {
         return {};
     }
 
-    // Positional embedding for this position
     std::vector<ValuePtr> pos_emb = pos_embed.forward(pos + 1);
     if (pos_emb.empty()) {
         return {};
     }
 
-    // FIX: ambil dari emb[0][i], bukan emb[i] (yang dulunya scalar per
-    // token). pos_emb juga flat (seq_len * d_model); untuk posisi
-    // terakhir yang baru saja dihitung, offsetnya ada di akhir buffer.
     int pos_offset = pos * d_model;
 
-    // Combine token and positional embeddings
     std::vector<ValuePtr> x(d_model);
     for (int i = 0; i < d_model; ++i) {
         ValuePtr tok_val = (i < (int)emb[0].size()) ? emb[0][i] : Value::create(0.0);
@@ -154,22 +136,25 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
         x[i] = tok_val + pos_val;
     }
 
-    // Apply dropout
     x = embed_drop.forward(x);
 
-    // Pass through blocks (simplified for incremental)
+    // FIX: pakai KV-cache asli per layer (this->caches), bukan lagi
+    // "replay" 1 token doang tanpa histori. Tiap block baca+tulis
+    // caches[i] supaya attention token ini benar-benar melihat semua
+    // token sebelumnya di posisi 0..pos, bukan cuma dirinya sendiri.
+    if (caches.size() != blocks.size()) {
+        caches.resize(blocks.size());
+    }
+
     for (size_t i = 0; i < blocks.size(); ++i) {
-        std::vector<std::vector<ValuePtr>> x_batch = {x};
-        x_batch = blocks[i].forward(x_batch, {});
-        if (!x_batch.empty() && !x_batch[0].empty()) {
-            x = x_batch[0];
+        x = blocks[i].forward_incremental(x, caches[i].first, caches[i].second);
+        if (x.empty()) {
+            return {};
         }
     }
 
-    // Final layer norm
     x = ln_f.forward(x);
 
-    // Final projection
     std::vector<ValuePtr> logits = head.forward(x);
 
     return logits;
@@ -182,14 +167,11 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
 std::vector<ValuePtr> MiniGPT::parameters() {
     std::vector<ValuePtr> params;
 
-    // Embedding weights
     for (auto& p : embed.weight) {
         params.push_back(p);
     }
 
-    // Transformer blocks
     for (auto& block : blocks) {
-        // Attention weights
         for (auto& p : block.attn.weight_q) params.push_back(p);
         for (auto& p : block.attn.weight_k) params.push_back(p);
         for (auto& p : block.attn.weight_v) params.push_back(p);
@@ -199,24 +181,20 @@ std::vector<ValuePtr> MiniGPT::parameters() {
         for (auto& p : block.attn.bias_v) params.push_back(p);
         for (auto& p : block.attn.bias_o) params.push_back(p);
 
-        // FF weights
         for (auto& p : block.ff.w1) params.push_back(p);
         for (auto& p : block.ff.w2) params.push_back(p);
         for (auto& p : block.ff.b1) params.push_back(p);
         for (auto& p : block.ff.b2) params.push_back(p);
 
-        // Layer norm
         params.push_back(block.ln1.weight);
         params.push_back(block.ln1.bias);
         params.push_back(block.ln2.weight);
         params.push_back(block.ln2.bias);
     }
 
-    // Final layer norm
     params.push_back(ln_f.weight);
     params.push_back(ln_f.bias);
 
-    // Final head
     for (auto& p : head.weight) params.push_back(p);
     for (auto& p : head.bias) params.push_back(p);
 
@@ -239,7 +217,6 @@ void MiniGPT::init_cache() {
 // ============================================================
 
 void MiniGPT::set_training(bool mode) {
-    // Set dropout mode for all components
     embed_drop.training = mode;
     for (auto& block : blocks) {
         block.attn_dropout.training = mode;
