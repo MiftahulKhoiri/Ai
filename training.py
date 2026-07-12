@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# training.py - Script untuk training MiniGPT (versi mmap_ninja)
+# training.py - Script untuk training MiniGPT (versi mmap_ninja, config terpusat)
 
 import sys
 import json
@@ -10,46 +10,56 @@ import random
 import math
 from typing import List, Tuple, Dict, Any
 
-# Import dari library minigpt
 from minigpt import (
     MiniGPT,
     Tokenizer,
     AdamW,
     WarmupCosineScheduler,
+    ModelConfig,        # <-- BARU: sumber kebenaran tunggal untuk hyperparameter
     generate,
     cross_entropy_loss,
     clip_grad_norm,
     argmax,
     Value,
-    MMapDataset,          # <-- BARU: reader mmap_ninja
-    build_mmap_dataset,   # <-- BARU: writer mmap_ninja
+    MMapDataset,
+    build_mmap_dataset,
 )
 
 # ============================================================
 # KONFIGURASI TRAINING
 # ============================================================
-SEQ_LEN = 32
-BATCH_SIZE = 8
-EPOCHS = 50
+# FIX (unifikasi config): field yang JUGA ada di C++ ModelConfig
+# (arsitektur model + hyperparameter optimizer/scheduler) sekarang
+# hidup di satu objek "cfg", persis sama strukturnya dengan yang
+# dipakai train.cpp/main.cpp lewat bindings.cpp. Field yang MURNI
+# milik script Python ini (tidak relevan untuk C++/checkpoint biner)
+# tetap jadi konstanta terpisah di bawah.
+def build_default_config() -> ModelConfig:
+    cfg = ModelConfig()
+    cfg.vocab_size = 200
+    cfg.d_model = 16
+    cfg.n_heads = 4
+    cfg.n_layers = 2
+    cfg.d_ff = 16
+    cfg.max_len = 32
+    cfg.dropout = 0.1
+    cfg.learning_rate = 0.01
+    cfg.weight_decay = 0.01
+    cfg.warmup_steps = 30
+    cfg.total_steps = 200
+    cfg.epochs = 50
+    cfg.batch_size = 16
+    return cfg
+
+# Hyperparameter yang TIDAK ada di ModelConfig (spesifik alur Python ini)
 PATIENCE = 3
-LR = 0.01
-WARMUP_STEPS = 30
-TOTAL_STEPS = 100
-ADDITIONAL_STEPS = 100
 MAX_GRAD_NORM = 1.0
-D_MODEL = 8
-N_HEADS = 4
-N_LAYERS = 2
-D_FF = 16
-MAX_LEN = 32
-DROPOUT = 0.1
-VOCAB_SIZE = 200
+ADDITIONAL_STEPS = 100
 
 # ============================================================
 # FUNGSI MEMORI
 # ============================================================
 def get_memory_info():
-    """Membaca informasi memori dari /proc (untuk Linux/Android)"""
     mem_info = {
         'process_mb': 0.0,
         'system_total_mb': 0.0,
@@ -145,27 +155,16 @@ def build_dataset(tokenized: List[List[int]], seq_len: int, pad_id: int) -> List
     return examples
 
 def iter_batches_mmap(dataset, batch_size: int, shuffle: bool = True):
-    """
-    Pengganti iter_batches() lama. Tidak pernah memegang seluruh
-    dataset di RAM Python — cuma daftar index (int biasa, murah),
-    lalu dataset.get_batch() memicu OS memuat halaman yang dibutuhkan
-    saja dari mmap file.
-    """
     n = dataset.size()
     indices = list(range(n))
     if shuffle:
         random.shuffle(indices)
-
     for i in range(0, n, batch_size):
         batch_indices = indices[i:i + batch_size]
         if batch_indices:
             yield dataset.get_batch(batch_indices)
 
 def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
-    # FIX: total_loss_value diakumulasi lewat graph autograd (loss + loss + ...),
-    # bukan ditimpa. Sebelumnya cabang if/else sama-sama "= loss", jadi cuma
-    # sample terakhir di batch yang ikut backward(); sample lain sia-sia dihitung
-    # forward-nya tapi tidak pernah menyumbang gradien.
     total_loss_value = None
     n_samples = 0
 
@@ -189,7 +188,7 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
         n_samples += 1
 
     if n_samples > 0:
-        total_loss_value = total_loss_value / n_samples  # rata-rata per batch
+        total_loss_value = total_loss_value / n_samples
         total_loss_value.backward()
         params = model.parameters()
         grad_norm = clip_grad_norm(params, max_grad_norm)
@@ -203,10 +202,25 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
 # ============================================================
 # FUNGSI SAVE/LOAD CHECKPOINT
 # ============================================================
-def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None, 
-                    config=None, total_steps=0, epoch=0, loss=0.0):
+def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
+                    cfg: ModelConfig = None, total_steps=0, epoch=0, loss=0.0):
     checkpoint = {
-        'config': config or {},
+        # FIX (unifikasi config): config disimpan langsung dari field cfg,
+        # bukan dict manual terpisah yang bisa lupa disinkronkan.
+        'config': {
+            'vocab_size': cfg.vocab_size,
+            'd_model': cfg.d_model,
+            'n_heads': cfg.n_heads,
+            'n_layers': cfg.n_layers,
+            'd_ff': cfg.d_ff,
+            'max_len': cfg.max_len,
+            'dropout': cfg.dropout,
+            'learning_rate': cfg.learning_rate,
+            'weight_decay': cfg.weight_decay,
+            'warmup_steps': cfg.warmup_steps,
+            'batch_size': cfg.batch_size,
+            'epochs': cfg.epochs,
+        } if cfg else {},
         'total_steps': total_steps,
         'epoch': epoch,
         'loss': loss,
@@ -236,11 +250,10 @@ def save_checkpoint(path, model, optimizer=None, scheduler=None, tokenizer=None,
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(checkpoint, f, indent=2, ensure_ascii=False)
 
-def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
+def load_checkpoint(path, additional_steps=0, min_lr=1e-5):
     with open(path, 'r', encoding='utf-8') as f:
         checkpoint = json.load(f)
 
-    # Restore tokenizer
     tokenizer = Tokenizer()
     if 'vocab' in checkpoint and checkpoint['vocab']:
         vocab = {k: v for k, v in checkpoint['vocab'].items()}
@@ -250,23 +263,33 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
         tokenizer.set_inv_vocab(inv_vocab)
         tokenizer.set_merge_order(merge_order)
 
-    config = checkpoint.get('config', {})
-    vocab_size = config.get('vocab_size', len(tokenizer.get_vocab()))
-    d_model = config.get('d_model', D_MODEL)
-    n_heads = config.get('n_heads', N_HEADS)
-    n_layers = config.get('n_layers', N_LAYERS)
-    d_ff = config.get('d_ff', D_FF)
-    max_len = config.get('max_len', MAX_LEN)
-    dropout = config.get('dropout', DROPOUT)
+    # FIX (unifikasi config): rekonstruksi cfg dari checkpoint, dengan
+    # default ModelConfig() sebagai fallback per-field kalau checkpoint
+    # lama tidak punya field tertentu (mis. checkpoint dari sebelum
+    # unifikasi ini dibuat).
+    saved = checkpoint.get('config', {})
+    cfg = build_default_config()
+    cfg.vocab_size = saved.get('vocab_size', len(tokenizer.get_vocab()))
+    cfg.d_model = saved.get('d_model', cfg.d_model)
+    cfg.n_heads = saved.get('n_heads', cfg.n_heads)
+    cfg.n_layers = saved.get('n_layers', cfg.n_layers)
+    cfg.d_ff = saved.get('d_ff', cfg.d_ff)
+    cfg.max_len = saved.get('max_len', cfg.max_len)
+    cfg.dropout = saved.get('dropout', cfg.dropout)
+    cfg.learning_rate = checkpoint.get('lr', saved.get('learning_rate', cfg.learning_rate))
+    cfg.weight_decay = saved.get('weight_decay', cfg.weight_decay)
+    cfg.warmup_steps = saved.get('warmup_steps', cfg.warmup_steps)
+    cfg.batch_size = saved.get('batch_size', cfg.batch_size)
+    cfg.epochs = saved.get('epochs', cfg.epochs)
 
     model = MiniGPT(
-        vocab_size=vocab_size,
-        d_model=d_model,
-        n_heads=n_heads,
-        n_layers=n_layers,
-        d_ff=d_ff,
-        max_len=max_len,
-        dropout=dropout
+        vocab_size=cfg.vocab_size,
+        d_model=cfg.d_model,
+        n_heads=cfg.n_heads,
+        n_layers=cfg.n_layers,
+        d_ff=cfg.d_ff,
+        max_len=cfg.max_len,
+        dropout=cfg.dropout
     )
 
     if 'params' in checkpoint and checkpoint['params']:
@@ -276,8 +299,7 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
                 p.data = checkpoint['params'][i]
 
     params = model.parameters()
-    lr = checkpoint.get('lr', LR)
-    optimizer = AdamW(params, lr=lr, weight_decay=0.01)
+    optimizer = AdamW(params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
 
     if 'm' in checkpoint and checkpoint['m']:
         optimizer.set_m(checkpoint['m'])
@@ -293,16 +315,16 @@ def load_checkpoint(path, additional_steps=0, warmup_steps=30, min_lr=1e-5):
 
     scheduler = WarmupCosineScheduler(
         optimizer,
-        warmup_steps=warmup_steps,
+        warmup_steps=cfg.warmup_steps,
         total_steps=total_steps,
-        base_lr=lr,
+        base_lr=cfg.learning_rate,
         min_lr=min_lr
     )
     scheduler.set_step_num(scheduler_step)
 
     print(f"✅ Checkpoint loaded: step={scheduler_step}, total_steps={total_steps}")
 
-    return model, optimizer, scheduler, tokenizer, config, total_steps
+    return model, optimizer, scheduler, tokenizer, cfg, total_steps
 
 def test_generate(model, tokenizer):
     prompts = ["Halo", "Apa kabar", "Saya suka"]
@@ -322,11 +344,12 @@ def test_generate(model, tokenizer):
 # ============================================================
 def main():
     if len(sys.argv) < 2:
-        print("Penggunaan: python3 training.py <data.json> [checkpoint.json]")
+        print("Penggunaan: python3 training.py <data.json> [checkpoint.json] [config.json]")
         return
 
     data_file = sys.argv[1]
     resume_checkpoint = sys.argv[2] if len(sys.argv) > 2 else None
+    config_file = sys.argv[3] if len(sys.argv) > 3 else None
 
     if not os.path.exists(data_file):
         print(f"❌ File data '{data_file}' tidak ditemukan.")
@@ -339,7 +362,6 @@ def main():
     print("🚀 MINIGPT TRAINING" + (" (RESUME)" if resume_checkpoint else ""))
     print("="*60)
 
-    # 1. Load data
     print_memory_info("SEBELUM LOAD DATA")
     print("\n" + "="*60)
     print("📂 1. MEMUAT DATA")
@@ -354,40 +376,46 @@ def main():
     print(f"  Rata-rata      : {avg_chars:.1f} karakter/kalimat")
     print_memory_info("SETELAH LOAD DATA")
 
-    # 2. Tokenizer
     if resume_checkpoint:
         print("\n" + "="*60)
         print("📦 MEMUAT CHECKPOINT")
         print("="*60)
-        model, optimizer, scheduler, tokenizer, config, total_steps = load_checkpoint(
+        model, optimizer, scheduler, tokenizer, cfg, total_steps = load_checkpoint(
             resume_checkpoint,
             additional_steps=ADDITIONAL_STEPS,
-            warmup_steps=WARMUP_STEPS,
             min_lr=1e-5
         )
         print(f"  Checkpoint     : {resume_checkpoint}")
-        print(f"  Config         : {config}")
         print(f"  Vocab size     : {len(tokenizer.get_vocab())}")
         print(f"  Step terakhir  : {scheduler.get_step_num()}")
         print(f"  Tambah steps   : {ADDITIONAL_STEPS}")
         print(f"  Total steps baru: {total_steps}")
     else:
+        # FIX (unifikasi config): cfg dibangun dari file JSON kalau
+        # diberikan (kompatibel dengan yang ditulis main.cpp lewat
+        # cfg.to_json / --config), kalau tidak pakai default script ini.
+        if config_file and os.path.exists(config_file):
+            cfg = ModelConfig.from_json(config_file)
+            print(f"  Config dimuat dari: {config_file}")
+        else:
+            cfg = build_default_config()
+            print("  Menggunakan ModelConfig default (script)")
+
         print("\n" + "="*60)
         print("🔤 2. MELATIH TOKENIZER BPE")
         print("="*60)
         corpus = "\n".join(sentences)
         print(f"  Total karakter corpus : {len(corpus)}")
-        print(f"  Target vocab size     : {VOCAB_SIZE}")
+        print(f"  Target vocab size     : {cfg.vocab_size}")
         t0 = time.time()
         tokenizer = Tokenizer()
-        tokenizer.train(corpus, vocab_size=VOCAB_SIZE)
+        tokenizer.train(corpus, vocab_size=cfg.vocab_size)
         print(f"  Tokenizer selesai     : {format_time(time.time()-t0)}")
         print(f"  Vocab size aktual     : {len(tokenizer.get_vocab())}")
         vocab_items = list(tokenizer.get_vocab().items())[:10]
         print(f"  10 token pertama      : {[t[0] for t in vocab_items]}")
         print_memory_info("SETELAH TOKENIZER")
 
-    # 3. Encode & build dataset
     print("\n" + "="*60)
     print("🔢 3. ENCODE & BUILD DATASET")
     print("="*60)
@@ -402,57 +430,56 @@ def main():
     avg_tokens = total_tokens / max(1, len(sentences))
     print(f"  Total token         : {total_tokens}")
     print(f"  Rata-rata token     : {avg_tokens:.1f} token/kalimat")
-    print(f"  SEQ_LEN             : {SEQ_LEN}")
+    print(f"  max_len (SEQ_LEN)   : {cfg.max_len}")
     print(f"  pad_id              : {pad_id}")
 
-    examples = build_dataset(tokenized, SEQ_LEN, pad_id)
+    examples = build_dataset(tokenized, cfg.max_len, pad_id)
     n_examples = len(examples)
     print(f"  Contoh training     : {n_examples}")
     if n_examples == 0:
-        print("  ❌ Tidak ada contoh training! Periksa SEQ_LEN dan data.")
+        print("  ❌ Tidak ada contoh training! Periksa max_len dan data.")
         return
     print_memory_info("SETELAH BUILD DATASET")
 
-    # --- mmap_ninja: tulis examples ke disk, lalu buang dari RAM Python ---
     print("\n" + "="*60)
     print("💽 3b. MENULIS DATASET KE MMAP FILE")
     print("="*60)
-    mmap_path = os.path.splitext(os.path.basename(data_file))[0] + f".seq{SEQ_LEN}.mmpn"
+    mmap_path = os.path.splitext(os.path.basename(data_file))[0] + f".seq{cfg.max_len}.mmpn"
     t0 = time.time()
-    build_mmap_dataset(mmap_path, examples, SEQ_LEN)
+    build_mmap_dataset(mmap_path, examples, cfg.max_len)
     print(f"  File mmap      : {mmap_path}")
     print(f"  Waktu tulis    : {format_time(time.time()-t0)}")
     size_mb = os.path.getsize(mmap_path) / (1024*1024)
     print(f"  Ukuran file    : {size_mb:.2f} MB")
 
-    del examples  # buang list Python besar dari RAM; sisa akses lewat mmap
+    del examples
     dataset = MMapDataset(mmap_path)
     print(f"  Dataset dimuat : {dataset.size()} contoh, seq_len={dataset.seq_len()} (via mmap)")
     print_memory_info("SETELAH BUILD MMAP DATASET")
 
-    # 4. Inisialisasi model
     if not resume_checkpoint:
         print("\n" + "="*60)
         print("🧠 4. INISIALISASI MODEL")
         print("="*60)
-        actual_vocab = len(tokenizer.get_vocab())
-        est_params = estimate_model_size(actual_vocab, D_MODEL, N_LAYERS, N_HEADS, D_FF, MAX_LEN)
-        print(f"  Vocab size     : {actual_vocab}")
-        print(f"  d_model        : {D_MODEL}")
-        print(f"  n_heads        : {N_HEADS}")
-        print(f"  n_layers       : {N_LAYERS}")
-        print(f"  d_ff           : {D_FF}")
-        print(f"  max_len        : {MAX_LEN}")
-        print(f"  dropout        : {DROPOUT}")
+        cfg.vocab_size = len(tokenizer.get_vocab())  # vocab aktual menang atas target
+        est_params = estimate_model_size(cfg.vocab_size, cfg.d_model, cfg.n_layers,
+                                          cfg.n_heads, cfg.d_ff, cfg.max_len)
+        print(f"  Vocab size     : {cfg.vocab_size}")
+        print(f"  d_model        : {cfg.d_model}")
+        print(f"  n_heads        : {cfg.n_heads}")
+        print(f"  n_layers       : {cfg.n_layers}")
+        print(f"  d_ff           : {cfg.d_ff}")
+        print(f"  max_len        : {cfg.max_len}")
+        print(f"  dropout        : {cfg.dropout}")
         print(f"  Est. parameter : {est_params:,}")
         model = MiniGPT(
-            vocab_size=actual_vocab,
-            d_model=D_MODEL,
-            n_heads=N_HEADS,
-            n_layers=N_LAYERS,
-            d_ff=D_FF,
-            max_len=MAX_LEN,
-            dropout=DROPOUT
+            vocab_size=cfg.vocab_size,
+            d_model=cfg.d_model,
+            n_heads=cfg.n_heads,
+            n_layers=cfg.n_layers,
+            d_ff=cfg.d_ff,
+            max_len=cfg.max_len,
+            dropout=cfg.dropout
         )
         model.set_training(True)
         all_params = model.parameters()
@@ -462,58 +489,48 @@ def main():
         print("\n" + "="*60)
         print("⚙️  5. OPTIMIZER & SCHEDULER")
         print("="*60)
-        total_steps = TOTAL_STEPS
-        optimizer = AdamW(all_params, lr=LR, weight_decay=0.01)
-        scheduler = WarmupCosineScheduler(optimizer, warmup_steps=WARMUP_STEPS,
-                                          total_steps=total_steps, base_lr=LR, min_lr=1e-5)
+        total_steps = cfg.total_steps
+        optimizer = AdamW(all_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        scheduler = WarmupCosineScheduler(optimizer, warmup_steps=cfg.warmup_steps,
+                                          total_steps=total_steps, base_lr=cfg.learning_rate, min_lr=1e-5)
         print(f"  Optimizer      : AdamW")
-        print(f"  LR awal        : {LR}")
-        print(f"  Weight decay   : 0.01")
-        print(f"  Scheduler      : Warmup + Cosine Decay")
-        print(f"  Warmup steps   : {WARMUP_STEPS}")
+        print(f"  LR awal        : {cfg.learning_rate}")
+        print(f"  Weight decay   : {cfg.weight_decay}")
+        print(f"  Warmup steps   : {cfg.warmup_steps}")
         print(f"  Total steps    : {total_steps}")
-        print(f"  Min LR         : 1e-5")
     else:
         print("\n" + "="*60)
         print("🔄 MELANJUTKAN TRAINING")
         print("="*60)
         model.set_training(True)
         print(f"  Model siap, training mode aktif.")
-        print(f"  Optimizer & scheduler dari checkpoint.")
 
-    # 5. TRAINING
     print("\n" + "="*60)
     print("🏋️  6. TRAINING")
     print("="*60)
-    total_batches = max(1, dataset.size() // BATCH_SIZE)
+    total_batches = max(1, dataset.size() // cfg.batch_size)
     print(f"  Dataset       : {dataset.size()} contoh (mmap: {mmap_path})")
-    print(f"  Batch size    : {BATCH_SIZE}")
+    print(f"  Batch size    : {cfg.batch_size}")
     print(f"  Batch/epoch   : {total_batches}")
-    print(f"  Epochs        : {EPOCHS}")
+    print(f"  Epochs        : {cfg.epochs}")
     print(f"  Max steps     : {total_steps}")
     print(f"  Max grad norm : {MAX_GRAD_NORM}")
 
     start_time = time.time()
     global_step = scheduler.get_step_num()
-    # FIX: dipisah jadi dua variabel. Sebelumnya "best_loss" dipakai untuk
-    # loss-per-batch minimum DAN untuk perbandingan early stopping per-epoch
-    # sekaligus — akibatnya early stopping selalu membandingkan avg_loss (epoch)
-    # terhadap loss batch terendah (biasanya jauh lebih kecil), sehingga
-    # "avg_loss < best_loss" nyaris selalu False dan early stopping kepicu
-    # terlalu cepat, bukan karena model benar-benar berhenti membaik.
-    best_batch_loss = float('inf')   # untuk tampilan saja
-    best_loss = float('inf')         # khusus early stopping (avg_loss per-epoch)
+    best_batch_loss = float('inf')
+    best_loss = float('inf')
     wait = 0
     history = []
 
     print("\n▶️  MEMULAI TRAINING...\n")
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, cfg.epochs + 1):
         epoch_start = time.time()
         total_loss = 0.0
         n_batches = 0
-        print(f"Epoch {epoch}/{EPOCHS}")
+        print(f"Epoch {epoch}/{cfg.epochs}")
 
-        for batch in iter_batches_mmap(dataset, BATCH_SIZE, shuffle=True):
+        for batch in iter_batches_mmap(dataset, cfg.batch_size, shuffle=True):
             if len(batch) == 0:
                 continue
             loss, grad_norm = train_batch(model, optimizer, batch, scheduler=scheduler,
@@ -580,23 +597,14 @@ def main():
             print(f"  {h['epoch']:3d}    {h['avg_loss']:.4f}     {h['best_loss']:.4f}   {h['lr']:.8f}   {h['time']}")
     print_memory_info("SETELAH TRAINING")
 
-    # 6. SAVE CHECKPOINT
     print("\n" + "="*60)
     print("💾 7. MENYIMPAN CHECKPOINT BARU")
     print("="*60)
     version = get_next_version()
     checkpoint_path = f"Ai_{version}.json"
-    config = {
-        "vocab_size": len(tokenizer.get_vocab()),
-        "d_model": model.d_model,
-        "n_heads": N_HEADS,
-        "n_layers": N_LAYERS,
-        "d_ff": D_FF,
-        "max_len": model.max_len,
-        "dropout": DROPOUT
-    }
+    cfg.epochs = epoch  # catat epoch aktual yang tercapai (kalau early-stop)
     save_checkpoint(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler,
-                    tokenizer=tokenizer, config=config, total_steps=total_steps)
+                    tokenizer=tokenizer, cfg=cfg, total_steps=total_steps)
     if os.path.exists(checkpoint_path):
         size_kb = os.path.getsize(checkpoint_path) / 1024
         print(f"  Checkpoint    : {checkpoint_path}")
