@@ -153,7 +153,12 @@ PYBIND11_MODULE(minigpt, m) {
              py::arg("warmup_steps"),
              py::arg("total_steps"),
              py::arg("base_lr") = 1e-3,
-             py::arg("min_lr") = 1e-5)
+             py::arg("min_lr") = 1e-5,
+             // FIX: WarmupCosineScheduler menyimpan AdamW* mentah. Kalau
+             // objek Python AdamW dibuang selagi scheduler masih dipakai,
+             // pointer ini jadi dangling. keep_alive<1,2> mengikat lifetime
+             // argumen "opt" (arg ke-2) ke lifetime scheduler (self/arg ke-1).
+             py::keep_alive<1, 2>())
         .def("step", &WarmupCosineScheduler::step)
         .def("get_step_num", &WarmupCosineScheduler::get_step_num)
         .def("set_step_num", &WarmupCosineScheduler::set_step_num, py::arg("step_num"));
@@ -191,7 +196,13 @@ PYBIND11_MODULE(minigpt, m) {
         .def(py::init<ByteLevelBPETokenizer&, int, int>(),
              py::arg("tokenizer"),
              py::arg("batch_size") = 8,
-             py::arg("seq_len") = 128)
+             py::arg("seq_len") = 128,
+             // FIX: DataLoader menyimpan "ByteLevelBPETokenizer& tokenizer"
+             // sebagai member reference (lihat dataloader.h). Tanpa
+             // keep_alive, kalau tokenizer Python di-garbage-collect
+             // selagi DataLoader masih hidup, reference ini jadi dangling
+             // -> use-after-free saat load_text()/next_batch() dipanggil.
+             py::keep_alive<1, 2>())
         .def("load_text", &DataLoader::load_text,
              py::arg("text"), py::arg("add_bos") = true, py::arg("add_eos") = true)
         .def("load_texts", &DataLoader::load_texts,
@@ -272,7 +283,17 @@ PYBIND11_MODULE(minigpt, m) {
         .def_readwrite("no_repeat_ngram_size", &advanced_generation::GenerationConfig::no_repeat_ngram_size);
 
     py::class_<advanced_generation::AdvancedGenerator>(m, "AdvancedGenerator")
-        .def(py::init<MiniGPT&, ByteLevelBPETokenizer&>())
+        .def(py::init<MiniGPT&, ByteLevelBPETokenizer&>(),
+             py::arg("model"),
+             py::arg("tokenizer"),
+             // FIX: constructor menerima MiniGPT& dan ByteLevelBPETokenizer&
+             // dengan pola yang sama seperti DataLoader -- kemungkinan besar
+             // disimpan sebagai reference member di dalam kelas ini juga.
+             // Ikat lifetime keduanya ke lifetime AdvancedGenerator supaya
+             // tidak jadi dangling reference kalau Python membuang objek
+             // model/tokenizer duluan.
+             py::keep_alive<1, 2>(),
+             py::keep_alive<1, 3>())
         .def("set_config", &advanced_generation::AdvancedGenerator::set_config)
         .def("get_config", &advanced_generation::AdvancedGenerator::get_config)
         .def("generate", &advanced_generation::AdvancedGenerator::generate,
@@ -348,10 +369,14 @@ PYBIND11_MODULE(minigpt, m) {
         .def(py::init<const mmap_ninja::MMapDataset&, size_t, bool, unsigned>(),
              py::arg("dataset"), py::arg("batch_size"),
              py::arg("shuffle") = true, py::arg("seed") = 42,
+             // FIX: MMapBatchIterator menyimpan "const MMapDataset& dataset_"
+             // sebagai member reference. Tanpa keep_alive, kalau objek
+             // Python MMapDataset dibuang selagi iterator masih dipakai,
+             // reference ini dangling -> next_batch() baca memori yang
+             // sudah di-munmap/di-close.
+             py::keep_alive<1, 2>(),
              "Iterator untuk batch dari dataset mmap")
         .def("next_batch", [](mmap_ninja::MMapBatchIterator& self) {
-            // next_batch() C++ pakai output-parameter (bool return + reference),
-            // jadi dibungkus lambda supaya di Python jadi (bool, list<list<int>>).
             std::vector<std::vector<int>> batch;
             bool ok = self.next_batch(batch);
             return py::make_tuple(ok, batch);
