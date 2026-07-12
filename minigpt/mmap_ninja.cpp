@@ -82,9 +82,6 @@ MMapDataset::MMapDataset(const std::string& path) {
         throw std::runtime_error("mmap_ninja: file terlalu kecil / bukan file mmap_ninja: " + path);
     }
 
-    // MAP_PRIVATE + PROT_READ: read-only. mmap() cuma membuat pemetaan
-    // alamat virtual; page fisik baru benar-benar dimuat dari disk
-    // saat byte-nya diakses (demand paging) — inti dari mmap_ninja.
     map_base_ = mmap(nullptr, map_size_, PROT_READ, MAP_PRIVATE, fd_, 0);
     if (map_base_ == MAP_FAILED) {
         close(fd_);
@@ -110,6 +107,19 @@ MMapDataset::MMapDataset(const std::string& path) {
         throw std::runtime_error("mmap_ninja: versi file tidak didukung: " + std::to_string(header->version));
     }
 
+    // FIX: validasi dtype_size juga -- sebelumnya cuma ditulis oleh
+    // writer tapi tidak pernah dicek reader. Kalau nanti ada versi
+    // writer lain yang nulis tipe data berbeda (misal int16), reader
+    // ini akan diam-diam salah interpretasi byte tanpa error apapun.
+    if (header->dtype_size != sizeof(int32_t)) {
+        munmap(map_base_, map_size_);
+        close(fd_);
+        fd_ = -1;
+        map_base_ = nullptr;
+        throw std::runtime_error("mmap_ninja: dtype_size tidak didukung (diharapkan " +
+                                  std::to_string(sizeof(int32_t)) + " byte): " + path);
+    }
+
     seq_len_ = header->seq_len;
     num_examples_ = header->num_examples;
     header_size_ = sizeof(MMapHeader);
@@ -126,8 +136,6 @@ MMapDataset::MMapDataset(const std::string& path) {
     data_ = reinterpret_cast<const int32_t*>(
         reinterpret_cast<const char*>(map_base_) + header_size_);
 
-    // Hint ke kernel: akses akan acak (shuffle tiap epoch), jadi
-    // readahead sekuensial default tidak banyak membantu.
     madvise(map_base_, map_size_, MADV_RANDOM);
 }
 
@@ -209,7 +217,18 @@ void MMapDataset::prefetch(size_t idx, size_t count) const {
     size_t end = std::min(idx + count, (size_t)num_examples_);
     const char* start_ptr = reinterpret_cast<const char*>(data_ + (size_t)idx * seq_len_);
     size_t len_bytes = (end - idx) * (size_t)seq_len_ * sizeof(int32_t);
-    madvise(const_cast<char*>(start_ptr), len_bytes, MADV_WILLNEED);
+
+    // FIX: madvise() mensyaratkan alamat page-aligned (kelipatan page
+    // size), kalau tidak gagal EINVAL secara diam-diam (return value
+    // sebelumnya tidak dicek). Bulatkan alamat ke bawah ke batas
+    // halaman terdekat, dan tambah panjangnya supaya range yang
+    // diminta tetap tercakup penuh.
+    long page_size = sysconf(_SC_PAGESIZE);
+    uintptr_t addr = reinterpret_cast<uintptr_t>(start_ptr);
+    uintptr_t aligned_addr = addr & ~(uintptr_t)(page_size - 1);
+    size_t adjust = addr - aligned_addr;
+
+    madvise(reinterpret_cast<void*>(aligned_addr), len_bytes + adjust, MADV_WILLNEED);
 }
 
 // ============================================================
@@ -228,7 +247,7 @@ void MMapBatchIterator::reset() {
     if (shuffle_) {
         std::mt19937 rng(seed_);
         std::shuffle(order_.begin(), order_.end(), rng);
-        seed_ = rng();  // ganti seed supaya epoch berikutnya urutan beda lagi
+        seed_ = rng();
     }
     cursor_ = 0;
 }
@@ -240,10 +259,6 @@ bool MMapBatchIterator::next_batch(std::vector<std::vector<int>>& out_batch) {
     size_t end = std::min(cursor_ + batch_size_, order_.size());
     std::vector<size_t> indices(order_.begin() + (long)cursor_, order_.begin() + (long)end);
 
-    // Titik "ajaib"-nya: get_batch() cuma memicu page fault untuk index
-    // yang diminta. OS memuat halaman terkait dari disk ke RAM saat itu
-    // juga (demand paging), lalu bisa di-evict lagi kalau RAM dibutuhkan
-    // proses lain — tanpa kita perlu kelola memori manual.
     out_batch = dataset_.get_batch(indices);
     cursor_ = end;
     return true;
