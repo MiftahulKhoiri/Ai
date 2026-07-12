@@ -88,9 +88,19 @@ public:
     Dropout attn_dropout;
 
     MultiHeadSelfAttention(int d_model, int n_heads, double dropout = 0.1, int max_len = 1024);
+
     std::vector<std::vector<ValuePtr>> forward(
         const std::vector<std::vector<ValuePtr>>& x,
         const std::vector<int>& pad_mask = {});
+
+    // BARU: forward untuk 1 token, memakai + memperbarui KV-cache.
+    // k_cache/v_cache: satu entri per posisi masa lalu (termasuk token
+    // ini setelah dipanggil), tiap entri berukuran d_model (flat, belum
+    // dipecah per-head -- pemecahan head dilakukan di dalam fungsi ini).
+    std::vector<ValuePtr> forward_incremental(
+        const std::vector<ValuePtr>& x_token,
+        std::vector<std::vector<ValuePtr>>& k_cache,
+        std::vector<std::vector<ValuePtr>>& v_cache);
 };
 
 // ============================================================
@@ -129,9 +139,16 @@ public:
     Dropout attn_dropout;
 
     TransformerBlock(int d_model, int n_heads, int d_ff, double dropout = 0.1, int max_len = 1024);
+
     std::vector<std::vector<ValuePtr>> forward(
         const std::vector<std::vector<ValuePtr>>& x,
         const std::vector<int>& pad_mask = {});
+
+    // BARU: versi 1-token, pakai KV-cache milik block ini.
+    std::vector<ValuePtr> forward_incremental(
+        const std::vector<ValuePtr>& x_token,
+        std::vector<std::vector<ValuePtr>>& k_cache,
+        std::vector<std::vector<ValuePtr>>& v_cache);
 };
 
 // ============================================================
