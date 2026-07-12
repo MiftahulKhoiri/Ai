@@ -1,8 +1,11 @@
 // matrix.h
 #pragma once
 #include "tensor.h"
+#include "simd.h"        // FIX: wajib -- simd::set1/load/store/fmadd + SIMD_*_WIDTH dipakai langsung di sini
 #include <cmath>
 #include <stdexcept>
+#include <algorithm>     // FIX: untuk std::fill, std::min
+#include <type_traits>   // FIX: untuk std::is_same_v
 
 namespace linalg {
 
