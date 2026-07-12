@@ -162,7 +162,11 @@ def iter_batches_mmap(dataset, batch_size: int, shuffle: bool = True):
             yield dataset.get_batch(batch_indices)
 
 def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
-    total_loss = 0.0
+    # FIX: total_loss_value diakumulasi lewat graph autograd (loss + loss + ...),
+    # bukan ditimpa. Sebelumnya cabang if/else sama-sama "= loss", jadi cuma
+    # sample terakhir di batch yang ikut backward(); sample lain sia-sia dihitung
+    # forward-nya tapi tidak pernah menyumbang gradien.
+    total_loss_value = None
     n_samples = 0
 
     optimizer.zero_grad()
@@ -177,14 +181,15 @@ def train_batch(model, optimizer, batch, scheduler=None, max_grad_norm=1.0):
         logits = model.forward(input_ids)
         loss = cross_entropy_loss(logits, target_ids, [])
 
-        if n_samples == 0:
+        if total_loss_value is None:
             total_loss_value = loss
         else:
-            total_loss_value = loss
+            total_loss_value = total_loss_value + loss
 
         n_samples += 1
 
     if n_samples > 0:
+        total_loss_value = total_loss_value / n_samples  # rata-rata per batch
         total_loss_value.backward()
         params = model.parameters()
         grad_norm = clip_grad_norm(params, max_grad_norm)
@@ -490,7 +495,14 @@ def main():
 
     start_time = time.time()
     global_step = scheduler.get_step_num()
-    best_loss = float('inf')
+    # FIX: dipisah jadi dua variabel. Sebelumnya "best_loss" dipakai untuk
+    # loss-per-batch minimum DAN untuk perbandingan early stopping per-epoch
+    # sekaligus — akibatnya early stopping selalu membandingkan avg_loss (epoch)
+    # terhadap loss batch terendah (biasanya jauh lebih kecil), sehingga
+    # "avg_loss < best_loss" nyaris selalu False dan early stopping kepicu
+    # terlalu cepat, bukan karena model benar-benar berhenti membaik.
+    best_batch_loss = float('inf')   # untuk tampilan saja
+    best_loss = float('inf')         # khusus early stopping (avg_loss per-epoch)
     wait = 0
     history = []
 
@@ -509,8 +521,8 @@ def main():
             total_loss += loss
             n_batches += 1
             global_step += 1
-            if loss < best_loss:
-                best_loss = loss
+            if loss < best_batch_loss:
+                best_batch_loss = loss
 
             mem_mb = get_process_memory_mb()
             mem_str = f"{mem_mb:.0f}MB" if mem_mb > 0 else "N/A"
@@ -523,7 +535,7 @@ def main():
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / max(1, n_batches)
         print(f"  ✅ Epoch {epoch} selesai : "
-              f"avg_loss={avg_loss:.4f}  best={best_loss:.4f}  "
+              f"avg_loss={avg_loss:.4f}  best_batch={best_batch_loss:.4f}  "
               f"time={format_time(epoch_time)}  step={global_step}/{total_steps}")
         print()
 
@@ -539,7 +551,7 @@ def main():
         if avg_loss < best_loss:
             best_loss = avg_loss
             wait = 0
-            print(f"  📈 Loss membaik! Best loss sekarang: {best_loss:.4f}")
+            print(f"  📈 Loss membaik! Best avg loss sekarang: {best_loss:.4f}")
         else:
             wait += 1
             print(f"  ⏳ Early Stopping: {wait}/{PATIENCE} (loss tidak membaik)")
