@@ -1,5 +1,6 @@
 // utils.cpp
 #include "utils.h"
+#include "backward.h"
 #include <cmath>
 
 #ifndef M_PI
@@ -12,22 +13,21 @@ ValuePtr gelu(const ValuePtr& x) {
     double x3 = val * val * val;
     double tanh_arg = c * (val + 0.044715 * x3);
     double result = 0.5 * val * (1.0 + std::tanh(tanh_arg));
-    
+
     auto out = Value::create(result);
     out->_prev = {x};
     out->_op = "gelu";
-    
-    out->_backward = [out, x]() {
-        double grad = out->grad;
-        double v = x->data;
-        double c = std::sqrt(2.0 / M_PI);
-        double v3 = v * v * v;
-        double tanh_arg = c * (v + 0.044715 * v3);
-        double tanh_val = std::tanh(tanh_arg);
-        double sech2 = 1.0 - tanh_val * tanh_val;
-        double dgelu = 0.5 * (1.0 + tanh_val) + 0.5 * v * c * (1.0 + 3.0 * 0.044715 * v * v) * sech2;
-        x->grad += dgelu * grad;
+
+    // FIX: capture raw pointer (out_ptr), BUKAN shared_ptr "out" itu sendiri.
+    // Capture "out" langsung akan membuat reference cycle:
+    // out -> _backward (closure) -> capture out -> kembali ke out.
+    // Refcount out tidak akan pernah turun ke 0 -> node bocor permanen.
+    Value* out_ptr = out.get();
+    out->_backward = [out_ptr, x]() {
+        // Reuse turunan GELU yang sudah ada di backward.cpp,
+        // supaya rumus tidak terduplikasi di dua tempat.
+        autograd::backward::gelu(out_ptr, x);
     };
-    
+
     return out;
 }
