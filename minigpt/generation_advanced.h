@@ -43,6 +43,13 @@ private:
     ByteLevelBPETokenizer& tokenizer;
     GenerationConfig config;
 
+    // FIX (server paralel): cache KV sekarang milik INSTANCE
+    // AdvancedGenerator ini, bukan model yang di-share. Selama tiap
+    // request HTTP membuat AdvancedGenerator baru (lihat server.h),
+    // tiap request otomatis punya cache sendiri -- generate() beberapa
+    // request bisa jalan bersamaan tanpa saling menimpa cache.
+    std::vector<MiniGPT::LayerCache> cache;
+
     std::vector<std::string> greedy_generate(const std::vector<int>& input_ids);
     std::vector<std::string> beam_search_generate(const std::vector<int>& input_ids);
     void apply_repetition_penalty(std::vector<Value::Ptr>& logits, 
