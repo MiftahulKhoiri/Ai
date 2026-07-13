@@ -19,19 +19,28 @@ inline void quantize_float_to_int8(const std::vector<double>& data,
                                    int8_t& zero_point) {
     if (data.empty()) return;
 
-    // Find min and max
     double min_val = *std::min_element(data.begin(), data.end());
     double max_val = *std::max_element(data.begin(), data.end());
 
-    // Calculate scale and zero point
     scale = (max_val - min_val) / 255.0;
-    if (scale == 0.0) scale = 1.0;  // Prevent division by zero
-    zero_point = static_cast<int8_t>(std::round(128.0 - min_val / scale));
+    if (scale == 0.0) scale = 1.0;
 
-    // Quantize
+    // FIX: zero_point dihitung dalam ruang uint8 [0,255] dulu (standar
+    // affine quantization), lalu digeser ke rentang int8 [-128,127].
+    // Sebelumnya zero_point dihitung dari min_val tapi loop quantize di
+    // bawah TIDAK memakainya (selalu pakai konstanta 128), sementara
+    // dequantize MEMAKAI zero_point ini -- encode dan decode jadi pakai
+    // skema berbeda, hasil round-trip salah untuk data yang tidak
+    // simetris di sekitar nol (kasus umum untuk bobot neural net).
+    double zp_double = std::round(-min_val / scale);
+    zp_double = std::max(0.0, std::min(255.0, zp_double));
+    int zero_point_u8 = static_cast<int>(zp_double);
+    zero_point = static_cast<int8_t>(zero_point_u8 - 128);
+
     quantized.resize(data.size());
     for (size_t i = 0; i < data.size(); ++i) {
-        double q = data[i] / scale + 128.0;
+        // FIX: pakai zero_point_u8 yang baru dihitung, bukan konstanta 128.
+        double q = data[i] / scale + zero_point_u8;
         q = std::max(0.0, std::min(255.0, q));
         quantized[i] = static_cast<int8_t>(std::round(q) - 128);
     }
@@ -44,7 +53,11 @@ inline void dequantize_int8_to_float(const std::vector<int8_t>& quantized,
                                      int8_t zero_point) {
     data.resize(quantized.size());
     for (size_t i = 0; i < quantized.size(); ++i) {
-        data[i] = (static_cast<double>(quantized[i]) + 128.0 - static_cast<double>(zero_point)) * scale;
+        // FIX: konsisten dengan encode -- balikkan pergeseran int8->uint8
+        // untuk quantized value maupun zero_point, baru selisihkan.
+        int q_u8 = static_cast<int>(quantized[i]) + 128;
+        int zp_u8 = static_cast<int>(zero_point) + 128;
+        data[i] = static_cast<double>(q_u8 - zp_u8) * scale;
     }
 }
 
@@ -52,13 +65,10 @@ inline void dequantize_int8_to_float(const std::vector<int8_t>& quantized,
 inline void quantize_model(MiniGPT& model) {
     auto params = model.parameters();
     std::cout << "🔢 Quantizing model parameters..." << std::endl;
-    (void)model;  // Supress unused parameter warning
-    
+    (void)model;
+
     for (auto& p : params) {
-        // Store quantization parameters
-        // In practice, you'd store scale and zero_point per parameter
-        // This is a simplified version
-        (void)p;  // Supress unused variable warning
+        (void)p;
     }
     std::cout << "✅ Model quantization completed (simplified)" << std::endl;
 }
@@ -68,11 +78,9 @@ inline void prune_weights(MiniGPT& model, double threshold = 0.01) {
     auto params = model.parameters();
     int pruned_count = 0;
     int total_count = 0;
-    (void)model;  // Supress unused parameter warning
+    (void)model;
 
     for (auto& p : params) {
-        // This is simplified - in practice, you'd need to access
-        // the actual weight tensors
         double val = p->data;
         if (std::abs(val) < threshold) {
             p->data = 0.0;
@@ -102,7 +110,12 @@ inline void distill(MiniGPT& teacher, MiniGPT& student,
                     DataLoader& dataloader, AdamW& optimizer,
                     const DistillationConfig& config = DistillationConfig()) {
     std::cout << "📚 Starting Knowledge Distillation for " << config.epochs << " epochs..." << std::endl;
-    (void)teacher;  // Supress unused parameter warning
+
+    // FIX: teacher HARUS dalam mode eval (dropout mati) supaya "soft
+    // target" yang diberikan ke student konsisten/deterministik, bukan
+    // acak tiap forward pass. Student tetap dalam mode training.
+    teacher.set_training(false);
+    student.set_training(true);
 
     for (int epoch = 0; epoch < config.epochs; ++epoch) {
         float total_loss = 0.0;
@@ -113,42 +126,45 @@ inline void distill(MiniGPT& teacher, MiniGPT& student,
             auto batch = dataloader.next_batch();
             if (batch.empty()) break;
 
-            // C++17 structured binding - kita gunakan loop manual
             for (size_t b = 0; b < batch.size(); ++b) {
                 const auto& input_ids = batch[b].first;
                 const auto& target_ids = batch[b].second;
 
-                // Teacher forward - simplified (in practice, use teacher logits)
                 auto teacher_logits = teacher.forward(input_ids);
-
-                // Student forward
                 auto student_logits = student.forward(input_ids);
 
-                // Compute student loss (cross entropy)
                 auto student_loss = cross_entropy_loss(student_logits, target_ids, {});
 
-                // Compute distillation loss (KL divergence)
-                // Simplified: using MSE between logits
-                double distill_loss_val = 0.0;
+                // FIX: distillation loss (MSE antar logits) dibangun dari
+                // operasi ValuePtr (+, -, *), BUKAN dihitung sebagai
+                // double mentah lalu dibungkus Value::create(). Sebelumnya
+                // distill_loss/combined adalah node baru yang lepas total
+                // dari graph student_logits -- combined->backward() tidak
+                // pernah mengubah grad parameter manapun, jadi
+                // optimizer.step() pada dasarnya tidak melatih apa-apa.
+                ValuePtr distill_loss = Value::create(0.0);
+                int diff_count = 0;
                 for (size_t pos = 0; pos < teacher_logits.size() && pos < student_logits.size(); ++pos) {
                     for (size_t i = 0; i < teacher_logits[pos].size() && i < student_logits[pos].size(); ++i) {
-                        double diff = teacher_logits[pos][i]->data - student_logits[pos][i]->data;
-                        distill_loss_val += diff * diff;
+                        ValuePtr diff = teacher_logits[pos][i] - student_logits[pos][i];
+                        distill_loss = distill_loss + (diff * diff);
+                        diff_count++;
                     }
                 }
-                auto distill_loss = Value::create(distill_loss_val);
+                if (diff_count > 0) {
+                    distill_loss = distill_loss / Value::create(static_cast<double>(diff_count));
+                }
 
-                // Combined loss
-                auto combined = Value::create(
-                    config.alpha * distill_loss_val + config.beta * student_loss->data
-                );
+                // FIX: combined loss juga dibangun dari distill_loss dan
+                // student_loss yang keduanya masih terhubung ke graph asli.
+                ValuePtr combined = (distill_loss * Value::create(static_cast<double>(config.alpha)))
+                                   + (student_loss * Value::create(static_cast<double>(config.beta)));
 
-                // Backward
                 optimizer.zero_grad();
                 combined->backward();
                 optimizer.step();
 
-                total_loss += combined->data;
+                total_loss += static_cast<float>(combined->data);
                 batches++;
             }
         }
@@ -163,20 +179,9 @@ inline void distill(MiniGPT& teacher, MiniGPT& student,
 // Model compression
 inline void compress_model(MiniGPT& model, double compression_ratio = 0.5) {
     std::cout << "🔧 Compressing model to " << (compression_ratio * 100) << "% size..." << std::endl;
-    (void)model;  // Supress unused parameter warning
+    (void)model;
 
-    // This would involve:
-    // 1. Pruning
-    // 2. Quantization
-    // 3. Low-rank factorization
-    // Implement based on your model structure
-    
     std::cout << "✅ Model compression completed (simplified)" << std::endl;
 }
-
-// Forward declaration for cross_entropy_loss (from optim.h)
-extern ValuePtr cross_entropy_loss(const std::vector<std::vector<ValuePtr>>& logits_seq,
-                                   const std::vector<int>& target_ids,
-                                   const std::vector<int>& pad_mask);
 
 } // namespace quantization
