@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 #include <queue>
 #include <algorithm>
 #include <cmath>
@@ -29,20 +30,19 @@ struct GenerationConfig {
     std::unordered_set<int> forced_tokens;
 };
 
-// Forward declaration
 class AdvancedGenerator {
 public:
     AdvancedGenerator(MiniGPT& model, ByteLevelBPETokenizer& tokenizer);
-    
+
     void set_config(const GenerationConfig& config);
     const GenerationConfig& get_config() const;
     std::vector<std::string> generate(const std::string& prompt, bool add_bos = false, bool add_eos = false);
-    
+
 private:
     MiniGPT& model;
     ByteLevelBPETokenizer& tokenizer;
     GenerationConfig config;
-    
+
     std::vector<std::string> greedy_generate(const std::vector<int>& input_ids);
     std::vector<std::string> beam_search_generate(const std::vector<int>& input_ids);
     void apply_repetition_penalty(std::vector<Value::Ptr>& logits, 
