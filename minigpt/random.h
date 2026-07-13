@@ -5,13 +5,24 @@
 #include <limits>
 #include <random>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace rng {
 
 class Xoshiro256 {
   uint64_t s[4];
+  // FIX: pindah dari "static thread_local" di dalam normal() ke member
+  // instance. Sebelumnya cache Box-Muller dibagi ke SEMUA instance
+  // Xoshiro256 di thread yang sama -- kalau ada lebih dari satu RNG
+  // hidup bersamaan (mis. seed berbeda untuk eksperimen berbeda),
+  // instance kedua bisa "mencuri" spare value milik instance pertama,
+  // membuat dua stream yang seharusnya independen jadi berkorelasi.
+  bool has_spare_ = false;
+  double spare_ = 0.0;
 public:
   explicit Xoshiro256(uint64_t seed = 0) {
-    // Inisialisasi dengan splitmix64 untuk seed nol pun aman
     auto splitmix = [](uint64_t& x) {
       uint64_t z = (x += 0x9e3779b97f4a7c15);
       z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
@@ -47,19 +58,18 @@ public:
 
   // Normal distribution (Box–Muller, menghasilkan dua sample tapi kita kembalikan satu per call)
   double normal() noexcept {
-    // Menggunakan cache untuk sampel kedua
-    static thread_local bool has_spare = false;
-    static thread_local double spare;
-    if (has_spare) {
-      has_spare = false;
-      return spare;
+    // FIX: cache per-instance, bukan lagi dibagi antar semua objek
+    // Xoshiro256 di thread yang sama.
+    if (has_spare_) {
+      has_spare_ = false;
+      return spare_;
     }
     double u1 = uniform01();
     double u2 = uniform01();
     double r = std::sqrt(-2.0 * std::log(u1));
     double theta = 2.0 * M_PI * u2;
-    has_spare = true;
-    spare = r * std::sin(theta);
+    has_spare_ = true;
+    spare_ = r * std::sin(theta);
     return r * std::cos(theta);
   }
 };
