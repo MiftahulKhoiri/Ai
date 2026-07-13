@@ -65,9 +65,6 @@ TEST(ValueBackwardChain) {
     auto v3 = Value::create(4.0);
     auto v4 = v1 * v2 + v3;
     v4->backward();
-    // d(v4)/d(v1) = v2 = 3
-    // d(v4)/d(v2) = v1 = 2
-    // d(v4)/d(v3) = 1
     TEST_ASSERT_NEAR(v1->grad, 3.0, 1e-6);
     TEST_ASSERT_NEAR(v2->grad, 2.0, 1e-6);
     TEST_ASSERT_NEAR(v3->grad, 1.0, 1e-6);
@@ -78,7 +75,7 @@ TEST(ValueRelu) {
     auto v1 = Value::create(-2.0);
     auto v2 = relu(v1);
     TEST_ASSERT_NEAR(v2->data, 0.0, 1e-6);
-    
+
     auto v3 = Value::create(3.0);
     auto v4 = relu(v3);
     TEST_ASSERT_NEAR(v4->data, 3.0, 1e-6);
@@ -89,7 +86,7 @@ TEST(ValueTanh) {
     auto v1 = Value::create(0.0);
     auto v2 = tanh(v1);
     TEST_ASSERT_NEAR(v2->data, 0.0, 1e-6);
-    
+
     auto v3 = Value::create(1.0);
     auto v4 = tanh(v3);
     TEST_ASSERT_NEAR(v4->data, 0.761594, 1e-6);
@@ -114,7 +111,6 @@ TEST(ModelParameters) {
 
 TEST(TokenizerCreation) {
     ByteLevelBPETokenizer tokenizer;
-    // Test train with small corpus
     tokenizer.train("Hello world! This is a test.", 100);
     TEST_ASSERT(tokenizer.vocab_size() > 0);
     return true;
@@ -123,12 +119,11 @@ TEST(TokenizerCreation) {
 TEST(TokenizerEncodeDecode) {
     ByteLevelBPETokenizer tokenizer;
     tokenizer.train("Hello world! This is a test.", 100);
-    
+
     std::string text = "Hello world";
     auto tokens = tokenizer.encode(text);
     auto decoded = tokenizer.decode(tokens);
-    
-    // Decoded might not be exactly the same due to BPE
+
     TEST_ASSERT(!tokens.empty());
     return true;
 }
@@ -141,7 +136,20 @@ bool run_all_tests() {
     return TestRunner::instance().run_all();
 }
 
-// Main function for standalone execution
+// FIX: main() di sini bentrok dengan main() di main.cpp -- kalau build
+// system kamu (Makefile/CMake) mengompilasi semua .cpp jadi satu target
+// yang sama, ini menyebabkan error linker "multiple definition of main".
+// Ini juga relevan karena test.cpp perlu ikut dikompilasi ke pybind
+// module (minigpt.so) supaya run_all_tests() bisa dipanggil dari Python
+// lewat bindings.cpp -- main() ini TIDAK BOLEH ikut ke situ atau ke
+// binary main.cpp.
+//
+// Guard dengan macro: main() ini HANYA aktif kalau build system secara
+// eksplisit mendefinisikan MINIGPT_TEST_STANDALONE (mis. lewat target
+// build terpisah khusus untuk jalankan test dari command line, tanpa
+// main.cpp atau bindings.cpp ikut dikompilasi bersamaan).
+#ifdef MINIGPT_TEST_STANDALONE
 int main() {
     return run_all_tests() ? 0 : 1;
 }
+#endif
