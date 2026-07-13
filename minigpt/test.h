@@ -45,12 +45,11 @@ public:
         std::cout << "🧪 Running " << tests.size() << " tests..." << std::endl;
         std::cout << "========================================" << std::endl;
 
-        // C++17 structured binding - ganti dengan loop manual
         for (size_t i = 0; i < tests.size(); ++i) {
             const auto& test_pair = tests[i];
             const std::string& name = test_pair.first;
             const auto& test = test_pair.second;
-            
+
             std::cout << "▶ " << name << " ... ";
             auto test_start = std::chrono::steady_clock::now();
 
@@ -91,7 +90,6 @@ private:
     std::vector<std::pair<std::string, std::function<bool()>>> tests;
 };
 
-// Macro for defining tests
 #define TEST(name) \
     bool test_##name(); \
     struct TestRegistrar_##name { \
@@ -101,16 +99,7 @@ private:
     } test_registrar_##name; \
     bool test_##name()
 
-// Forward declaration untuk run_all_tests
+// Forward declaration untuk run_all_tests -- dipanggil dari bindings.cpp
+// (dibungkus jadi minigpt.run_all_tests() di Python) MAUPUN dari main()
+// standalone di bawah (kalau MINIGPT_TEST_STANDALONE didefinisikan).
 bool run_all_tests();
-
-// Example test
-/*
-TEST(ValueArithmetic) {
-    auto v1 = Value::create(5.0);
-    auto v2 = Value::create(3.0);
-    auto v3 = v1 + v2;
-    TEST_ASSERT_NEAR(v3->data, 8.0, 1e-6);
-    return true;
-}
-*/
