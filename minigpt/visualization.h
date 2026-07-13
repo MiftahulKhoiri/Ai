@@ -27,13 +27,11 @@ inline std::string graph_to_dot(const Value::Ptr& node,
     dot += "  rankdir=TB;\n";
     dot += "  node [shape=box, style=filled, fillcolor=lightblue];\n\n";
 
-    // Traverse graph (simplified)
     std::vector<Value::Ptr> visited;
     std::function<void(Value::Ptr)> traverse = [&](Value::Ptr n) {
         if (std::find(visited.begin(), visited.end(), n) != visited.end()) return;
         visited.push_back(n);
 
-        // Node label
         std::string label = "data=" + std::to_string(n->data);
         if (!n->_op.empty()) {
             label += "\\nop=" + n->_op;
@@ -41,7 +39,6 @@ inline std::string graph_to_dot(const Value::Ptr& node,
         dot += "  node" + std::to_string((uintptr_t)n.get()) + 
                " [label=\"" + label + "\"];\n";
 
-        // Edges to children
         for (auto& child : n->_prev) {
             dot += "  node" + std::to_string((uintptr_t)n.get()) + 
                    " -> node" + std::to_string((uintptr_t)child.get()) + ";\n";
@@ -80,19 +77,33 @@ inline void plot_attention(const std::vector<std::vector<double>>& attention,
 inline void save_embeddings(const std::vector<Value::Ptr>& embeddings,
                             const std::vector<std::string>& labels,
                             const std::string& filename = "embeddings.csv") {
+    // FIX: cek kosong dulu sebelum akses embeddings[0] -- sebelumnya
+    // langsung diakses tanpa guard, out-of-bounds/UB kalau kosong.
+    if (embeddings.empty()) {
+        std::cerr << "⚠️  save_embeddings: embeddings kosong, tidak ada yang disimpan" << std::endl;
+        return;
+    }
+
     std::ofstream file(filename);
     if (!file.is_open()) return;
 
-    file << "label";
-    for (size_t i = 0; i < embeddings[0]->data; ++i) {
-        file << ",dim" << i;
-    }
-    file << "\n";
+    // FIX: sebelumnya "embeddings[0]->data" (NILAI scalar embedding,
+    // mis. 0.023) dipakai sebagai batas loop jumlah dimensi -- salah
+    // total secara desain, dan berbahaya: kalau nilainya negatif,
+    // konversi implisit ke size_t (unsigned) menghasilkan angka raksasa
+    // -> loop nyaris tak berhenti / OOM.
+    //
+    // Catatan desain: struktur data saat ini (satu ValuePtr = satu
+    // scalar per label) tidak benar-benar menyimpan embedding
+    // multi-dimensi per label -- untuk t-SNE yang sebenarnya, tiap
+    // label biasanya butuh N dimensi. Untuk sekarang, header ditulis
+    // dengan SATU kolom nilai ("value"), sesuai data yang benar-benar
+    // tersedia dari tipe vector<ValuePtr> ini.
+    file << "label,value\n";
 
     for (size_t i = 0; i < embeddings.size(); ++i) {
-        file << (i < labels.size() ? labels[i] : std::to_string(i));
-        // This is simplified - actual embedding access depends on your implementation
-        file << "\n";
+        std::string label = (i < labels.size()) ? labels[i] : std::to_string(i);
+        file << label << "," << embeddings[i]->data << "\n";
     }
     file.close();
 }
@@ -101,10 +112,10 @@ inline void save_embeddings(const std::vector<Value::Ptr>& embeddings,
 class ConsoleProgressBar {
 public:
     ConsoleProgressBar(int total, const std::string& desc = "Progress", int width = 50)
-        : total(total),           // 1. total
-          current(0),             // 2. current
-          width(width),           // 3. width
-          desc(desc) {            // 4. desc
+        : total(total),
+          current(0),
+          width(width),
+          desc(desc) {
     }
 
     void update(int value) {
@@ -125,7 +136,10 @@ public:
 
 private:
     void print() {
-        float progress = static_cast<float>(current) / total;
+        // FIX: hindari div-by-zero -> NaN -> UB di static_cast<int>
+        // kalau total == 0 (sama seperti bug yang sudah diperbaiki di
+        // metrics.h::ProgressBar).
+        float progress = (total > 0) ? static_cast<float>(current) / total : 0.0f;
         int bar_width = static_cast<int>(progress * width);
 
         std::cout << "\r" << desc << ": [";
@@ -164,14 +178,12 @@ public:
         std::ofstream file(filename);
         if (!file.is_open()) return;
 
-        // Header
         file << "epoch";
         for (const auto& pair : metrics) {
             file << "," << pair.first;
         }
         file << "\n";
 
-        // Data
         size_t max_len = 0;
         for (const auto& pair : metrics) {
             max_len = std::max(max_len, pair.second.size());
