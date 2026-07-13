@@ -3,10 +3,6 @@
 #include <iostream>
 #include <random>
 
-// ============================================================
-// MINIGPT CONSTRUCTOR
-// ============================================================
-
 MiniGPT::MiniGPT(
     int vocab_size,
     int d_model,
@@ -36,10 +32,6 @@ MiniGPT::MiniGPT(
         cache.second.clear();
     }
 }
-
-// ============================================================
-// FORWARD
-// ============================================================
 
 std::vector<std::vector<ValuePtr>> MiniGPT::forward(
     const std::vector<int>& token_ids,
@@ -107,13 +99,23 @@ std::vector<std::vector<ValuePtr>> MiniGPT::forward(
     return logits;
 }
 
-// ============================================================
-// FORWARD INCREMENTAL
-// ============================================================
+// FIX (server paralel): logika inti forward_incremental sekarang ada di
+// overload yang menerima "external_cache" secara eksplisit. Versi lama
+// (2 argumen) tinggal delegasi ke overload ini pakai this->caches --
+// jadi tidak ada duplikasi logika, dan jalur single-threaded lama
+// (generate() CLI) tetap berfungsi seperti sebelumnya tanpa perubahan
+// perilaku.
+std::vector<ValuePtr> MiniGPT::forward_incremental(int token_id, int pos) {
+    if (caches.size() != blocks.size()) {
+        caches.resize(blocks.size());
+    }
+    return forward_incremental(token_id, pos, caches);
+}
 
 std::vector<ValuePtr> MiniGPT::forward_incremental(
     int token_id,
-    int pos) {
+    int pos,
+    std::vector<LayerCache>& external_cache) {
 
     std::vector<int> ids = {token_id};
     std::vector<std::vector<ValuePtr>> emb = embed.forward(ids);
@@ -138,16 +140,12 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
 
     x = embed_drop.forward(x);
 
-    // FIX: pakai KV-cache asli per layer (this->caches), bukan lagi
-    // "replay" 1 token doang tanpa histori. Tiap block baca+tulis
-    // caches[i] supaya attention token ini benar-benar melihat semua
-    // token sebelumnya di posisi 0..pos, bukan cuma dirinya sendiri.
-    if (caches.size() != blocks.size()) {
-        caches.resize(blocks.size());
+    if (external_cache.size() != blocks.size()) {
+        external_cache.resize(blocks.size());
     }
 
     for (size_t i = 0; i < blocks.size(); ++i) {
-        x = blocks[i].forward_incremental(x, caches[i].first, caches[i].second);
+        x = blocks[i].forward_incremental(x, external_cache[i].first, external_cache[i].second);
         if (x.empty()) {
             return {};
         }
@@ -159,10 +157,6 @@ std::vector<ValuePtr> MiniGPT::forward_incremental(
 
     return logits;
 }
-
-// ============================================================
-// PARAMETERS
-// ============================================================
 
 std::vector<ValuePtr> MiniGPT::parameters() {
     std::vector<ValuePtr> params;
@@ -201,20 +195,12 @@ std::vector<ValuePtr> MiniGPT::parameters() {
     return params;
 }
 
-// ============================================================
-// INIT CACHE
-// ============================================================
-
 void MiniGPT::init_cache() {
     for (auto& cache : caches) {
         cache.first.clear();
         cache.second.clear();
     }
 }
-
-// ============================================================
-// SET TRAINING
-// ============================================================
 
 void MiniGPT::set_training(bool mode) {
     embed_drop.training = mode;
