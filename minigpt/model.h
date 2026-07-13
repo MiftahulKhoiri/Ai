@@ -19,13 +19,17 @@ struct MiniGPT {
     LayerNorm ln_f;
     Linear head;
 
-    // KV cache untuk setiap TransformerBlock
-    std::vector<
-        std::pair<
-            std::vector<std::vector<ValuePtr>>, // Key cache
-            std::vector<std::vector<ValuePtr>>  // Value cache
-        >
-    > caches;
+    // Tipe cache satu layer: (K cache, V cache), sama seperti yang dipakai
+    // TransformerBlock::forward_incremental.
+    using LayerCache = std::pair<
+        std::vector<std::vector<ValuePtr>>,
+        std::vector<std::vector<ValuePtr>>
+    >;
+
+    // Cache internal -- dipakai jalur single-threaded lama (generate()
+    // di generation.cpp / CLI main.cpp). JANGAN dipakai dari lebih dari
+    // satu thread sekaligus, karena ini state yang di-share via member.
+    std::vector<LayerCache> caches;
 
     MiniGPT(
         int vocab_size,
@@ -44,10 +48,27 @@ struct MiniGPT {
 
     void init_cache();
 
+    // Versi lama: pakai cache internal (this->caches). Cocok untuk
+    // pemakaian single-threaded (CLI generate()).
     std::vector<ValuePtr> forward_incremental(
         int token_id,
         int pos
     );
+
+    // BARU: versi thread-safe -- cache disediakan PEMANGGIL (bukan
+    // member model), jadi tiap request/thread bisa punya cache sendiri
+    // tanpa saling bentrok. Dipakai server untuk generate paralel.
+    std::vector<ValuePtr> forward_incremental(
+        int token_id,
+        int pos,
+        std::vector<LayerCache>& external_cache
+    );
+
+    // Buat cache kosong baru berukuran sesuai jumlah layer -- dipanggil
+    // sekali per request sebelum mulai generate_incremental.
+    std::vector<LayerCache> make_cache() const {
+        return std::vector<LayerCache>(blocks.size());
+    }
 
     std::vector<ValuePtr> parameters();
 
