@@ -18,6 +18,9 @@ AdvancedGenerator::AdvancedGenerator(MiniGPT& model, ByteLevelBPETokenizer& toke
     config.num_return_sequences = 1;
     config.use_cache = true;
     config.no_repeat_ngram_size = 0;
+    // FIX (server paralel): cache dibuat di sini, milik instance ini
+    // sendiri -- bukan lagi model.caches yang di-share antar request.
+    cache = model.make_cache();
 }
 
 void AdvancedGenerator::set_config(const GenerationConfig& cfg) {
@@ -35,15 +38,15 @@ std::vector<std::string> AdvancedGenerator::generate(const std::string& prompt, 
         return {};
     }
 
-    model.set_training(false);
+    // CATATAN: model.set_training(false) TIDAK dipanggil di sini lagi.
+    // Kalau dipanggil per-request, ini nulis field mutable yang di-share
+    // semua thread (embed_drop.training, dst) -- race kalau paralel.
+    // Untuk server, panggil model.set_training(false) SEKALI saat startup
+    // (sebelum server mulai menerima request), bukan di sini.
 
-    // FIX: forward_incremental() SELALU memakai KV-cache internal model,
-    // tidak ada jalur "tanpa cache" yang sebenarnya. Sebelumnya init_cache()
-    // hanya dipanggil kalau use_cache==true -- kalau false, cache dari
-    // pemanggilan generate() SEBELUMNYA tetap tersisa dan "bocor" campur
-    // dengan prompt yang baru. Selalu reset cache di awal generate(),
-    // supaya tiap pemanggilan mulai dari konteks bersih.
-    model.init_cache();
+    // FIX (server paralel): cache instance ini di-reset di awal tiap
+    // pemanggilan generate(), bukan cache milik model yang di-share.
+    cache.assign(model.blocks.size(), MiniGPT::LayerCache{});
 
     if (config.num_beams <= 1) {
         return greedy_generate(input_ids);
@@ -56,20 +59,16 @@ std::vector<std::string> AdvancedGenerator::greedy_generate(const std::vector<in
     std::vector<int> current_tokens = input_ids;
     int eos_id = tokenizer.get_eos_token_id();
 
-    // FIX: sebelumnya loop generate langsung mulai dari pos=input_ids.size()
-    // dan cuma feed token TERAKHIR prompt (dengan posisi yang salah pula).
-    // Semua token prompt sebelum itu tidak pernah masuk KV-cache -- model
-    // hampir sepenuhnya mengabaikan prompt. Sekarang: feed seluruh prompt
-    // dulu ke forward_incremental dengan posisi yang benar, simpan logits
-    // dari token TERAKHIR sebagai starting point untuk generate.
     std::vector<Value::Ptr> logits;
     int pos = 0;
     for (; pos < (int)input_ids.size(); ++pos) {
-        logits = model.forward_incremental(input_ids[pos], pos);
+        // FIX (server paralel): pakai overload forward_incremental yang
+        // menerima cache eksternal (this->cache), bukan cache internal
+        // model yang di-share antar request.
+        logits = model.forward_incremental(input_ids[pos], pos, cache);
     }
 
     for (; pos < config.max_length; ++pos) {
-        // Apply repetition penalty
         if (config.repetition_penalty > 1.0f) {
             apply_repetition_penalty(logits, current_tokens, config.repetition_penalty);
         }
@@ -95,9 +94,8 @@ std::vector<std::string> AdvancedGenerator::greedy_generate(const std::vector<in
 
         current_tokens.push_back(next_token);
 
-        // Feed token yang baru dihasilkan untuk mendapat logits posisi berikutnya
         if (pos + 1 < config.max_length) {
-            logits = model.forward_incremental(next_token, pos + 1);
+            logits = model.forward_incremental(next_token, pos + 1, cache);
         }
     }
 
@@ -106,8 +104,6 @@ std::vector<std::string> AdvancedGenerator::greedy_generate(const std::vector<in
 }
 
 std::vector<std::string> AdvancedGenerator::beam_search_generate(const std::vector<int>& input_ids) {
-    // Simplified beam search - fallback to greedy for now
-    // Full implementation would require more complex beam management
     return greedy_generate(input_ids);
 }
 
@@ -122,14 +118,6 @@ void AdvancedGenerator::apply_repetition_penalty(std::vector<Value::Ptr>& logits
     for (size_t i = 0; i < logits.size(); ++i) {
         auto it = freq.find(static_cast<int>(i));
         if (it != freq.end()) {
-            // FIX: arah penalty tergantung tanda logit. Kalau logit positif,
-            // membaginya dengan penalty (>1) MENURUNKAN nilainya -> benar,
-            // menekan probabilitas token yang sudah muncul. Tapi kalau
-            // logit negatif, MEMBAGI dengan penalty malah membuatnya makin
-            // mendekati nol (nilai naik) -> menaikkan probabilitas, arah
-            // terbalik. Untuk logit negatif harus DIKALI penalty supaya
-            // makin negatif (tetap ditekan), konsisten dengan standar
-            // repetition penalty (CTRL / HuggingFace).
             double score = logits[i]->data;
             if (score > 0) {
                 score /= penalty;
